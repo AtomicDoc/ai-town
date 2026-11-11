@@ -8,7 +8,8 @@ import { point } from '../util/types';
 import { Descriptions } from '../../data/characters';
 import { AgentDescription } from './agentDescription';
 import { Agent } from './agent';
-import { isJobKind, jobKind, newJob } from './jobs';
+import { isJobKind, isOnShift, jobKind, newJob } from './jobs';
+import { gameHour } from './clock';
 
 export const agentInputs = {
   finishRememberConversation: inputHandler({
@@ -57,6 +58,12 @@ export const agentInputs = {
       }
       delete agent.inProgressOperation;
       const player = game.world.players.get(agent.playerId)!;
+      // A wander/invite/activity decided before the shift started can arrive
+      // after it. Drop it so the job keeps control of an on-shift worker.
+      if (agent.job && isOnShift(agent.job, gameHour(now))) {
+        console.log(`[job] ${player.id} on shift, ignoring stale agentDoSomething result`);
+        return null;
+      }
       if (args.invitee) {
         const inviteeId = parseGameId('players', args.invitee);
         const invitee = game.world.players.get(inviteeId);

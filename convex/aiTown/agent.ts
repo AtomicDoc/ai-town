@@ -22,7 +22,14 @@ import { distance } from '../util/geometry';
 import { internal } from '../_generated/api';
 import { movePlayer } from './movement';
 import { insertInput } from './insertInput';
-import { SerializedJob, serializedJob, tickJob } from './jobs';
+import {
+  SerializedJob,
+  isOnShift,
+  serializedJob,
+  shouldAcceptInviteWhileWorking,
+  tickJob,
+} from './jobs';
+import { gameHour } from './clock';
 
 export class Agent {
   id: GameId<'agents'>;
@@ -74,11 +81,19 @@ export class Agent {
     if (doingActivity && (conversation || player.pathfinding)) {
       player.activity!.until = now;
     }
-    // Scripted job routine (M2). Runs entirely in the engine with no LLM call.
-    // Skipped while in a conversation, and while a finished conversation is
-    // waiting to be remembered, so memory formation isn't starved during shifts.
-    if (!conversation && this.job && !this.toRemember && tickJob(game, now, this.job, player)) {
-      return;
+    // Scripted job routine (M2). Runs in the engine with no LLM call. Skipped
+    // while in a conversation (conversations take priority).
+    if (!conversation && this.job && isOnShift(this.job, gameHour(now))) {
+      // Save a finished conversation to memory first. Handle it here rather than
+      // falling through to agentDoSomething, which would make the worker wander
+      // off and invite someone new mid-shift.
+      if (this.toRemember) {
+        this.startRemembering(game, now);
+        return;
+      }
+      if (tickJob(game, now, this.job, player)) {
+        return;
+      }
     }
     // If we're not in a conversation, do something.
     // If we aren't doing an activity or moving, do something.
@@ -101,15 +116,7 @@ export class Agent {
     }
     // Check to see if we have a conversation we need to remember.
     if (this.toRemember) {
-      // Fire off the action to remember the conversation.
-      console.log(`Agent ${this.id} remembering conversation ${this.toRemember}`);
-      this.startOperation(game, now, 'agentRememberConversation', {
-        worldId: game.worldId,
-        playerId: this.playerId,
-        agentId: this.id,
-        conversationId: this.toRemember,
-      });
-      delete this.toRemember;
+      this.startRemembering(game, now);
       return;
     }
     if (conversation && member) {
@@ -119,8 +126,12 @@ export class Agent {
       const otherPlayer = game.world.players.get(otherPlayerId)!;
       if (member.status.kind === 'invited') {
         // Accept a conversation with another agent with some probability and with
-        // a human unconditionally.
-        if (otherPlayer.human || Math.random() < INVITE_ACCEPT_PROBABILITY) {
+        // a human unconditionally. On-shift workers decline other agents.
+        const working = this.job !== undefined && isOnShift(this.job, gameHour(now));
+        const accept = working
+          ? shouldAcceptInviteWhileWorking(!!otherPlayer.human)
+          : otherPlayer.human || Math.random() < INVITE_ACCEPT_PROBABILITY;
+        if (accept) {
           console.log(`Agent ${player.id} accepting invite from ${otherPlayer.id}`);
           conversation.acceptInvite(game, player);
           // Stop moving so we can start walking towards the other player.
@@ -242,6 +253,21 @@ export class Agent {
         return;
       }
     }
+  }
+
+  /** Fire off the action to remember the pending conversation. */
+  startRemembering(game: Game, now: number) {
+    if (!this.toRemember) {
+      return;
+    }
+    console.log(`Agent ${this.id} remembering conversation ${this.toRemember}`);
+    this.startOperation(game, now, 'agentRememberConversation', {
+      worldId: game.worldId,
+      playerId: this.playerId,
+      agentId: this.id,
+      conversationId: this.toRemember,
+    });
+    delete this.toRemember;
   }
 
   startOperation<Name extends keyof AgentOperations>(

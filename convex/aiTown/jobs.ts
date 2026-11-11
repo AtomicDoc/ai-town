@@ -128,14 +128,39 @@ export function decideJobStep(
   // 3. Get to work.
   if (distance(s.position, workplace) > WORKPLACE_ARRIVAL_DISTANCE) {
     const dest = s.pathfindingDestination;
-    if (dest && dest.x === workplace.x && dest.y === workplace.y) {
+    // The pathfinder may swap an occupied destination for a nearby open tile,
+    // so "heading to work" means heading anywhere that counts as arrived.
+    if (dest && distance(dest, workplace) <= WORKPLACE_ARRIVAL_DISTANCE) {
       return { kind: 'walking' };
     }
     return { kind: 'walkToWork', destination: workplace };
   }
 
-  // 4. At work and idle: start the next task.
+  // 4. Close enough but still moving: let the walk finish. Agent.tick cancels
+  // any activity started while pathfinding, so starting now would be undone.
+  if (s.pathfindingDestination) {
+    return { kind: 'walking' };
+  }
+
+  // 5. At work and idle: start the next task.
   return { kind: 'startTask', until: s.now + def.task.duration };
+}
+
+/** True while the job's shift window covers `hour`, or a task is still finishing. */
+export function isOnShift(job: SerializedJob, hour: number): boolean {
+  const def = JOB_DEFINITIONS[job.kind];
+  return job.taskEndsAt !== undefined || inHourWindow(hour, def.shiftStartHour, def.shiftEndHour);
+}
+
+/**
+ * Whether an on-shift worker should accept a conversation invite.
+ *
+ * Scripted rule (placeholder for M3's decisionPolicy.ts): while working, agents
+ * decline invites from other agents, otherwise NPC small talk eats whole shifts.
+ * Invites from human players are always accepted so the player can interrupt.
+ */
+export function shouldAcceptInviteWhileWorking(inviterIsHuman: boolean): boolean {
+  return inviterIsHuman;
 }
 
 /**
