@@ -320,10 +320,26 @@ export function restockDue(
   held: number,
   now: number,
 ): boolean {
-  if (!def.restock || !def.stockTarget || held >= def.restock.below) {
+  if (!def.restock || !def.stockTarget || held >= def.stockTarget.amount) {
     return false;
   }
-  return job.lastRestockAt === undefined || now - job.lastRestockAt >= RESTOCK_COOLDOWN;
+  // Top up to the target once at the start of every shift, whatever is left.
+  if (job.lastRestockAt === undefined || job.lastRestockAt < currentShiftStart(job, now)) {
+    return true;
+  }
+  // During the shift, top up again only when running low.
+  return held < def.restock.below && now - job.lastRestockAt >= RESTOCK_COOLDOWN;
+}
+
+/** Wall-clock time at which the most recent occurrence of the job's shift began. */
+export function currentShiftStart(
+  job: SerializedJob,
+  now: number,
+  dayLength: number = GAME_DAY_LENGTH,
+): number {
+  const { start } = shiftWindow(job);
+  const hoursSinceStart = (gameHour(now, dayLength) - start + 24) % 24;
+  return now - (hoursSinceStart / 24) * dayLength;
 }
 
 /**

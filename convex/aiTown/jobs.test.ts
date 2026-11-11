@@ -1,8 +1,10 @@
 import { gameHour, inHourWindow } from './clock';
+import { GAME_DAY_LENGTH } from '../constants';
 import {
   DELIVERY_COOLDOWN,
   JOB_DEFINITIONS,
   RESTOCK_COOLDOWN,
+  currentShiftStart,
   deliveryDue,
   deliveryQuantity,
   describeShift,
@@ -324,15 +326,48 @@ describe('shopkeeper (restock, no output)', () => {
     expect(step).toEqual({ kind: 'restock' });
   });
 
-  test('restockDue: only when low, and not more often than the cooldown', () => {
+  describe('restockDue', () => {
+    const DAY = GAME_DAY_LENGTH;
+    const SHIFT_START = 1000 * DAY + (6 / 24) * DAY; // 06:00, the default shopkeeper start
+    const AT_10AM = 1000 * DAY + (10 / 24) * DAY;
+    const target = shopkeeper.stockTarget!.amount;
     const below = shopkeeper.restock!.below;
-    expect(restockDue(newJob('shopkeeper'), shopkeeper, below, NOW)).toBe(false);
-    expect(restockDue(newJob('shopkeeper'), shopkeeper, below - 1, NOW)).toBe(true);
-    const recent = { ...newJob('shopkeeper'), lastRestockAt: NOW - 1 };
-    expect(restockDue(recent, shopkeeper, 0, NOW)).toBe(false);
-    const old = { ...newJob('shopkeeper'), lastRestockAt: NOW - RESTOCK_COOLDOWN };
-    expect(restockDue(old, shopkeeper, 0, NOW)).toBe(true);
-    expect(restockDue(newJob('farmer'), farmer, 0, NOW)).toBe(false);
+
+    test('currentShiftStart finds the most recent shift start', () => {
+      expect(currentShiftStart(newJob('shopkeeper'), AT_10AM)).toBeCloseTo(SHIFT_START);
+      const evening = newJob('shopkeeper', { start: 14, end: 22 });
+      // At 10:00 the evening shift last started at 14:00 the previous day.
+      expect(currentShiftStart(evening, AT_10AM)).toBeCloseTo(1000 * DAY - (10 / 24) * DAY);
+    });
+
+    test('tops up at the start of every shift, even with stock left', () => {
+      expect(restockDue(newJob('shopkeeper'), shopkeeper, below + 1, AT_10AM)).toBe(true);
+      const lastShift = { ...newJob('shopkeeper'), lastRestockAt: SHIFT_START - 1 };
+      expect(restockDue(lastShift, shopkeeper, target - 1, AT_10AM)).toBe(true);
+    });
+
+    test('never when already at the target', () => {
+      expect(restockDue(newJob('shopkeeper'), shopkeeper, target, AT_10AM)).toBe(false);
+    });
+
+    test('mid-shift: only when low, and not more often than the cooldown', () => {
+      const thisShift = { ...newJob('shopkeeper'), lastRestockAt: SHIFT_START + 1 };
+      expect(restockDue(thisShift, shopkeeper, below, AT_10AM)).toBe(false);
+      const recent = { ...newJob('shopkeeper'), lastRestockAt: AT_10AM - 1 };
+      expect(restockDue(recent, shopkeeper, 0, AT_10AM)).toBe(false);
+      // Cooldown is 4 game hours: restocked at 07:00, low again at 11:00.
+      const AT_11AM = 1000 * DAY + (11 / 24) * DAY;
+      const earlierThisShift = {
+        ...newJob('shopkeeper'),
+        lastRestockAt: AT_11AM - RESTOCK_COOLDOWN,
+      };
+      expect(earlierThisShift.lastRestockAt).toBeGreaterThan(SHIFT_START);
+      expect(restockDue(earlierThisShift, shopkeeper, below - 1, AT_11AM)).toBe(true);
+    });
+
+    test('jobs without restocking never restock', () => {
+      expect(restockDue(newJob('farmer'), farmer, 0, AT_10AM)).toBe(false);
+    });
   });
 
   test('a shift override moves the working hours', () => {
