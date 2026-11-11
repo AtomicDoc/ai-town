@@ -36,7 +36,6 @@ import { AgentEvent, serializedEvent } from './decisionPolicy';
 import {
   ApproachSeen,
   Intent,
-  detectPlayerApproach,
   processEvents,
   serializedApproachSeen,
   serializedIntent,
@@ -137,7 +136,6 @@ export class Agent {
       }
       // Unusual events (M3): routed through the decision policy, which may
       // ask the LLM. Then any multi-step plan the decision produced.
-      detectPlayerApproach(game, now, this, player);
       if (processEvents(game, now, this, player)) {
         return;
       }

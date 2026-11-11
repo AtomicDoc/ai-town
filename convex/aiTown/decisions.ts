@@ -20,7 +20,6 @@ import {
   DecisionChoice,
   EVENT_OPTIONS,
   decide,
-  enqueueEvent,
   policyMode,
   takeNextEvent,
 } from './decisionPolicy';
@@ -28,10 +27,6 @@ import type { Game } from './game';
 import type { Player } from './player';
 import type { Agent } from './agent';
 
-/** A human within this many tiles counts as approaching. */
-export const APPROACH_RADIUS = 3;
-/** Don't react to the same human approaching more often than this. */
-export const APPROACH_COOLDOWN = GAME_DAY_LENGTH / 8;
 /** A multi-step plan (e.g. steal) is abandoned after this long. */
 export const INTENT_TIMEOUT = GAME_DAY_LENGTH / 12;
 /** Shown while an LLM decision is pending. */
@@ -44,6 +39,7 @@ export const serializedIntent = v.object({
 });
 export type Intent = Infer<typeof serializedIntent>;
 
+// Legacy (PR #12 walk-by detection, removed): kept so saved agents still validate.
 export const serializedApproachSeen = v.object({ playerId, at: v.number() });
 export type ApproachSeen = Infer<typeof serializedApproachSeen>;
 
@@ -63,25 +59,9 @@ export function logRoutine(game: Game, now: number, player: Player, step: string
   });
 }
 
-// ---------------------------------------------------------------------------
-// Event detection
-// ---------------------------------------------------------------------------
-
-/** Queue a playerApproach event when a human comes close (with a cooldown). */
-export function detectPlayerApproach(game: Game, now: number, agent: Agent, player: Player) {
-  for (const other of game.world.players.values()) {
-    if (!other.human || other.id === player.id) continue;
-    if (distance(other.position, player.position) > APPROACH_RADIUS) continue;
-    if (game.world.playerConversation(other)) continue;
-    const seen = agent.approachSeen?.find((s) => s.playerId === other.id);
-    if (seen && now - seen.at < APPROACH_COOLDOWN) continue;
-    agent.approachSeen = [
-      ...(agent.approachSeen ?? []).filter((s) => s.playerId !== other.id),
-      { playerId: other.id, at: now },
-    ];
-    enqueueEvent(agent, { kind: 'playerApproach', at: now, subject: other.id });
-  }
-}
+// NPCs react only to direct interactions: being robbed, helped, or interfered
+// with (raised in relationships.recordTheft and actions.ts), plus seeing a
+// theft and being broke and hungry. Walking nearby triggers nothing.
 
 // ---------------------------------------------------------------------------
 // Event processing
@@ -208,6 +188,7 @@ export function applyDecision(
   switch (choice) {
     case 'confront':
     case 'greet':
+    case 'thank':
       note = startTalking(game, now, player, subject || undefined);
       break;
     case 'warnOthers':
