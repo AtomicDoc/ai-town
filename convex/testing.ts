@@ -22,6 +22,8 @@ import { formatGameTime, gameHour } from './aiTown/clock';
 import { itemKind } from './aiTown/inventory';
 import { parseCoins } from './aiTown/economy';
 import { hungerLevel } from './aiTown/needs';
+import { playerActionKind } from './aiTown/actions';
+import { describeBelief } from './aiTown/relationships';
 
 // Clear all of the tables except for the embeddings cache.
 const excludedTables: Array<TableNames> = ['embeddingsCache'];
@@ -207,6 +209,61 @@ export const syncCharacters = internalMutation({
   handler: async (ctx) => {
     const { worldStatus } = await getDefaultWorld(ctx.db);
     return await insertInput(ctx, worldStatus.worldId, 'syncCharacters', {});
+  },
+});
+
+// Perform a player action between two characters by name (works NPC -> NPC,
+// so the theft/witness/gossip scenario can be run without a human player).
+//   npx convex run testing:act '{"actor":"Stella","target":"Alice","action":"steal"}'
+//   npx convex run testing:act '{"actor":"Me","target":"Lucky","action":"buy","item":"bread"}'
+export const act = internalMutation({
+  args: {
+    actor: v.string(),
+    target: v.string(),
+    action: playerActionKind,
+    item: v.optional(itemKind),
+  },
+  handler: async (ctx, args) => {
+    const { worldStatus } = await getDefaultWorld(ctx.db);
+    const descriptions = await ctx.db
+      .query('playerDescriptions')
+      .withIndex('worldId', (q) => q.eq('worldId', worldStatus.worldId))
+      .collect();
+    const world = await ctx.db.get(worldStatus.worldId);
+    const active = new Set(world?.players.map((p) => p.id));
+    const find = (name: string) => {
+      const d = descriptions.find((d) => d.name === name && active.has(d.playerId));
+      if (!d) throw new Error(`No active player named ${name}`);
+      return d.playerId;
+    };
+    return await insertInput(ctx, worldStatus.worldId, 'playerAction', {
+      playerId: find(args.actor),
+      targetId: find(args.target),
+      action: args.action,
+      item: args.item,
+    });
+  },
+});
+
+// Everyone's opinions and beliefs, in plain language.
+//   npx convex run testing:social
+export const social = internalQuery({
+  handler: async (ctx) => {
+    const { worldStatus } = await getDefaultWorld(ctx.db);
+    const world = await ctx.db.get(worldStatus.worldId);
+    if (!world) {
+      throw new Error(`World ${worldStatus.worldId} not found`);
+    }
+    const descriptions = await ctx.db
+      .query('playerDescriptions')
+      .withIndex('worldId', (q) => q.eq('worldId', worldStatus.worldId))
+      .collect();
+    const nameOf = (id: string) => descriptions.find((d) => d.playerId === id)?.name ?? id;
+    return world.agents.map((a) => ({
+      name: nameOf(a.playerId),
+      opinions: Object.fromEntries((a.opinions ?? []).map((o) => [nameOf(o.playerId), o.score])),
+      beliefs: (a.beliefs ?? []).map((b) => describeBelief(b, a.playerId, nameOf)),
+    }));
   },
 });
 

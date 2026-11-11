@@ -4,6 +4,11 @@ import { ActionCtx, internalQuery } from '../_generated/server';
 import { LLMMessage, chatCompletion } from '../util/llm';
 import { llmTrace } from '../util/llmTrace';
 import { livelihoodPrompts } from '../aiTown/livelihood';
+import { socialPrompts } from '../aiTown/relationships';
+
+function nameLookup(names: { playerId: string; name: string }[]) {
+  return (id: string) => names.find((n) => n.playerId === id)?.name ?? 'someone';
+}
 import * as memory from './memory';
 import { api, internal } from '../_generated/api';
 import * as embeddingsCache from './embeddingsCache';
@@ -19,7 +24,7 @@ export async function startConversationMessage(
   playerId: GameId<'players'>,
   otherPlayerId: GameId<'players'>,
 ): Promise<string> {
-  const { player, otherPlayer, agent, otherAgent, lastConversation } = await ctx.runQuery(
+  const { player, otherPlayer, agent, otherAgent, lastConversation, names } = await ctx.runQuery(
     selfInternal.queryPromptData,
     {
       worldId,
@@ -48,6 +53,9 @@ export async function startConversationMessage(
   ];
   prompt.push(...agentPrompts(otherPlayer, agent, otherAgent ?? null));
   prompt.push(...livelihoodPrompts(player, agent, otherPlayer, otherAgent ?? null, Date.now()));
+  prompt.push(
+    ...socialPrompts(agent, player.id, otherPlayer.id, otherPlayer.name, nameLookup(names)),
+  );
   prompt.push(...previousConversationPrompt(otherPlayer, lastConversation));
   prompt.push(...untrustedMemoryInstructions(memories));
   if (memoryWithOtherPlayer) {
@@ -91,7 +99,7 @@ export async function continueConversationMessage(
   otherPlayerId: GameId<'players'>,
 ): Promise<string> {
   const trace = llmTrace(ctx, 'conversation.continue', playerId);
-  const { player, otherPlayer, conversation, agent, otherAgent } = await ctx.runQuery(
+  const { player, otherPlayer, conversation, agent, otherAgent, names } = await ctx.runQuery(
     selfInternal.queryPromptData,
     {
       worldId,
@@ -113,6 +121,9 @@ export async function continueConversationMessage(
   ];
   prompt.push(...agentPrompts(otherPlayer, agent, otherAgent ?? null));
   prompt.push(...livelihoodPrompts(player, agent, otherPlayer, otherAgent ?? null, Date.now()));
+  prompt.push(
+    ...socialPrompts(agent, player.id, otherPlayer.id, otherPlayer.name, nameLookup(names)),
+  );
   prompt.push(...untrustedMemoryInstructions(memories));
   prompt.push(
     `Below is the current chat history between you and ${otherPlayer.name}.`,
@@ -154,7 +165,7 @@ export async function leaveConversationMessage(
   playerId: GameId<'players'>,
   otherPlayerId: GameId<'players'>,
 ): Promise<string> {
-  const { player, otherPlayer, conversation, agent, otherAgent } = await ctx.runQuery(
+  const { player, otherPlayer, conversation, agent, otherAgent, names } = await ctx.runQuery(
     selfInternal.queryPromptData,
     {
       worldId,
@@ -170,6 +181,9 @@ export async function leaveConversationMessage(
   ];
   prompt.push(...agentPrompts(otherPlayer, agent, otherAgent ?? null));
   prompt.push(...livelihoodPrompts(player, agent, otherPlayer, otherAgent ?? null, Date.now()));
+  prompt.push(
+    ...socialPrompts(agent, player.id, otherPlayer.id, otherPlayer.name, nameLookup(names)),
+  );
   prompt.push(
     `Below is the current chat history between you and ${otherPlayer.name}.`,
     `How would you like to tell them that you're leaving? Your response should be brief and within 200 characters.`,
@@ -364,7 +378,13 @@ export const queryPromptData = internalQuery({
         throw new Error(`Conversation ${lastTogether.conversationId} not found`);
       }
     }
+    const allDescriptions = await ctx.db
+      .query('playerDescriptions')
+      .withIndex('worldId', (q) => q.eq('worldId', args.worldId))
+      .collect();
+    const names = allDescriptions.map((d) => ({ playerId: d.playerId, name: d.name }));
     return {
+      names,
       player: { name: playerDescription.name, ...player },
       otherPlayer: { name: otherPlayerDescription.name, ...otherPlayer },
       conversation,

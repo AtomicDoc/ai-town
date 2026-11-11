@@ -30,6 +30,7 @@ import { formatGameTime, gameHour, inHourWindow } from './clock';
 import { movePlayer } from './movement';
 import { ItemKind, addItem, countItem, removeItem } from './inventory';
 import { WHOLESALE_PRICES, sellUpTo } from './economy';
+import { noteTrade } from './relationships';
 import type { Game } from './game';
 import type { Player } from './player';
 
@@ -522,6 +523,9 @@ export function tickJob(game: Game, now: number, job: SerializedJob, player: Pla
           countSuppliers(game, item, recipient.job.kind),
         );
         sold = sellUpTo(player, recipient.player, item, quantity, WHOLESALE_PRICES[item]);
+        if (sold > 0) {
+          noteTrade(game, player.id, recipient.player.id);
+        }
       }
       job.lastDeliveryAt = now;
       console.log(
@@ -537,6 +541,9 @@ export function tickJob(game: Game, now: number, job: SerializedJob, player: Pla
       const bought = supplier
         ? sellUpTo(supplier.player, player, item, wanted, WHOLESALE_PRICES[item])
         : 0;
+      if (supplier && bought > 0) {
+        noteTrade(game, supplier.player.id, player.id);
+      }
       job.lastRestockAt = now;
       console.log(
         `[econ] ${player.id} (${def.title}) restocked ${bought}/${wanted} ${item}` +
