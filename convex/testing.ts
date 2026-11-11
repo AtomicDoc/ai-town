@@ -18,7 +18,7 @@ import { chatCompletion } from './util/llm';
 import { startConversationMessage } from './agent/conversation';
 import { GameId } from './aiTown/ids';
 import { jobKind } from './aiTown/jobs';
-import { gameHour } from './aiTown/clock';
+import { formatGameTime, gameHour } from './aiTown/clock';
 
 // Clear all of the tables except for the embeddings cache.
 const excludedTables: Array<TableNames> = ['embeddingsCache'];
@@ -176,6 +176,7 @@ export const jobStatus = internalQuery({
     return {
       worldStatus: worldStatus.status,
       gameHour: Number(gameHour(now).toFixed(2)),
+      gameTime: formatGameTime(gameHour(now)),
       agents: world.agents.map((a) => {
         const player = world.players.find((p) => p.id === a.playerId);
         return {
@@ -187,6 +188,7 @@ export const jobStatus = internalQuery({
           },
           activity:
             player?.activity && player.activity.until > now ? player.activity.description : null,
+          inventory: player?.inventory ?? {},
           operation: a.inProgressOperation?.name ?? null,
         };
       }),

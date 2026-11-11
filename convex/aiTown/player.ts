@@ -15,6 +15,7 @@ import { stopPlayer, findRoute, blocked, movePlayer } from './movement';
 import { inputHandler } from './inputHandler';
 import { characters } from '../../data/characters';
 import { PlayerDescription } from './playerDescription';
+import { Inventory, parseInventory, serializedInventory } from './inventory';
 
 const pathfinding = v.object({
   destination: point,
@@ -54,6 +55,9 @@ export const serializedPlayer = {
   position: point,
   facing: vector,
   speed: v.number(),
+
+  // Items held (M2, see inventory.ts). Omitted when empty.
+  inventory: v.optional(serializedInventory),
 };
 export type SerializedPlayer = ObjectType<typeof serializedPlayer>;
 
@@ -69,6 +73,8 @@ export class Player {
   facing: Vector;
   speed: number;
 
+  inventory: Inventory;
+
   constructor(serialized: SerializedPlayer) {
     const { id, human, pathfinding, activity, lastInput, position, facing, speed } = serialized;
     this.id = parseGameId('players', id);
@@ -79,6 +85,7 @@ export class Player {
     this.position = position;
     this.facing = facing;
     this.speed = speed;
+    this.inventory = parseInventory(serialized.inventory);
   }
 
   tick(game: Game, now: number) {
@@ -259,6 +266,10 @@ export class Player {
       position,
       facing,
       speed,
+      inventory:
+        Object.keys(this.inventory).length > 0
+          ? ({ ...this.inventory } as Record<string, number>)
+          : undefined,
     };
   }
 }

@@ -18,6 +18,7 @@ import { Point, point } from '../util/types';
 import { distance } from '../util/geometry';
 import { gameHour, inHourWindow } from './clock';
 import { movePlayer } from './movement';
+import { ItemKind, addItem, countItem } from './inventory';
 import type { Game } from './game';
 import type { Player } from './player';
 
@@ -43,8 +44,8 @@ export type JobDefinition = {
   shiftEndHour: number;
   /** One unit of work, shown in the UI as the player's activity. */
   task: { description: string; emoji: string; duration: number };
-  /** What one completed task produces. Moves into inventory.ts next. */
-  output: { item: string; amount: number };
+  /** What one completed task adds to the worker's inventory. */
+  output: { item: ItemKind; amount: number };
 };
 
 export const JOB_DEFINITIONS: Record<JobKind, JobDefinition> = {
@@ -72,7 +73,7 @@ export const serializedJob = {
   workplace: v.optional(point),
   /** Set while a work task is in progress; equals the task activity's `until`. */
   taskEndsAt: v.optional(v.number()),
-  /** Total units produced. Placeholder until inventory.ts owns items. */
+  /** Lifetime units produced (a metric; the items themselves go to the player's inventory). */
   produced: v.number(),
 };
 export type SerializedJob = ObjectType<typeof serializedJob>;
@@ -217,8 +218,11 @@ export function tickJob(game: Game, now: number, job: SerializedJob, player: Pla
     case 'completeTask':
       delete job.taskEndsAt;
       job.produced += def.output.amount;
+      const added = addItem(player.inventory, def.output.item, def.output.amount);
       console.log(
-        `[job] ${player.id} (${def.title}) produced ${def.output.amount} ${def.output.item} (total ${job.produced})`,
+        `[job] ${player.id} (${def.title}) produced ${def.output.amount} ${def.output.item}` +
+          ` (lifetime ${job.produced}, holding ${countItem(player.inventory, def.output.item)}` +
+          `${added < def.output.amount ? ', inventory full' : ''})`,
       );
       return true;
     case 'abandonTask':
