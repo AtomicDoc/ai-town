@@ -78,11 +78,11 @@ describe('beliefs', () => {
   });
 
   test('describeBelief', () => {
-    expect(describeBelief(theft(), 'p:3', nameOf)).toBe('You saw Me stole 1 bread from Alice.');
+    expect(describeBelief(theft(), 'p:3', nameOf)).toBe('You saw Me steal 1 bread from Alice.');
     expect(
       describeBelief(theft({ source: 'told', toldBy: 'p:3' as Belief['thief'] }), 'p:4', nameOf),
     ).toBe('Lucky told you that Me stole 1 bread from Alice.');
-    expect(describeBelief(theft(), 'p:2', nameOf)).toBe('You saw Me stole 1 bread from you.');
+    expect(describeBelief(theft(), 'p:2', nameOf)).toBe('You saw Me steal 1 bread from you.');
   });
 
   test('socialPrompts: confront the thief, gossip to others', () => {
@@ -92,10 +92,10 @@ describe('beliefs', () => {
     };
     expect(socialPrompts(lucky, 'p:3', 'p:1', 'Me', nameOf)).toEqual([
       'You distrust Me.',
-      'You saw Me stole 1 bread from Alice.',
+      'You saw Me steal 1 bread from Alice.',
     ]);
     expect(socialPrompts(lucky, 'p:3', 'p:4', 'Bob', nameOf)).toEqual([
-      'News you know: You saw Me stole 1 bread from Alice. You may bring it up if it fits the conversation.',
+      'News you know: You saw Me steal 1 bread from Alice. You may bring it up if it fits the conversation.',
     ]);
   });
 });

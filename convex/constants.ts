@@ -77,6 +77,10 @@ export const MAX_PATHFINDS_PER_STEP = 16;
 
 export const DEFAULT_NAME = 'Me';
 
+// Name NPCs see for the human player. Not "Me": prompts like "You distrust Me"
+// are ambiguous to the LLM.
+export const HUMAN_DISPLAY_NAME = 'Traveler';
+
 // Length of one in-game day in real milliseconds (see aiTown/clock.ts).
 // 20 min/day => one game hour is 50 s. Shorten for testing, lengthen for studies.
 export const GAME_DAY_LENGTH = 20 * 60 * 1000;

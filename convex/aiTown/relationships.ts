@@ -153,11 +153,12 @@ export function describeBelief(
 ): string {
   const thief = belief.thief === selfId ? 'you' : nameOf(belief.thief);
   const victim = belief.victim === selfId ? 'you' : nameOf(belief.victim);
-  const what = `${thief} stole ${belief.quantity} ${belief.item} from ${victim}`;
+  const object = `${belief.quantity} ${belief.item} from ${victim}`;
   if (belief.source === 'witnessed') {
-    return `You saw ${what}.`;
+    return `You saw ${thief} steal ${object}.`;
   }
-  return `${belief.toldBy ? nameOf(belief.toldBy) : 'Someone'} told you that ${what}.`;
+  const teller = belief.toldBy ? nameOf(belief.toldBy) : 'Someone';
+  return `${teller} told you that ${thief} stole ${object}.`;
 }
 
 /**
