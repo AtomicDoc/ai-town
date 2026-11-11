@@ -222,13 +222,13 @@ export default function PlayerDetails({
           </h2>
         </div>
       )}
-      {Object.keys(player.inventory).length > 0 && (
-        <div className="box flex-grow mt-6">
-          <h2 className="bg-brown-700 text-base sm:text-lg text-center">
-            Carrying: {describeInventory(player.inventory)}
-          </h2>
-        </div>
-      )}
+      <div className="box flex-grow mt-6">
+        <h2 className="bg-brown-700 text-base sm:text-lg text-center">
+          🪙 {player.coins} coins
+          {Object.keys(player.inventory).length > 0 &&
+            ` · Carrying: ${describeInventory(player.inventory)}`}
+        </h2>
+      </div>
       <div className="desc my-6">
         <p className="leading-tight -m-4 bg-brown-700 text-base sm:text-sm">
           {!isMe && playerDescription?.description}

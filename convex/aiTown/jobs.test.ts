@@ -1,6 +1,8 @@
 import { gameHour, inHourWindow } from './clock';
 import {
+  DELIVERY_COOLDOWN,
   JOB_DEFINITIONS,
+  deliveryDue,
   JobSnapshot,
   SerializedJob,
   WORKPLACE_ARRIVAL_DISTANCE,
@@ -19,7 +21,7 @@ const ON_SHIFT = 10; // farmer shift is [6, 16)
 const OFF_SHIFT = 20;
 
 function snapshot(overrides: Partial<JobSnapshot> = {}): JobSnapshot {
-  return { now: NOW, hour: ON_SHIFT, position: { ...workplace }, ...overrides };
+  return { now: NOW, hour: ON_SHIFT, position: { ...workplace }, hasInputs: true, ...overrides };
 }
 
 function workingJob(taskEndsAt: number): SerializedJob {
@@ -205,6 +207,92 @@ describe('findOpenTile', () => {
   });
 });
 
+describe('baker (task with inputs)', () => {
+  const baker = JOB_DEFINITIONS.baker;
+  const bakery = { x: 30, y: 20 };
+  const BAKER_ON_SHIFT = 8; // [4, 12)
+
+  test('at work with wheat: start baking', () => {
+    const step = decideJobStep(newJob('baker'), baker, bakery, {
+      now: NOW,
+      hour: BAKER_ON_SHIFT,
+      position: bakery,
+      hasInputs: true,
+    });
+    expect(step).toEqual({ kind: 'startTask', until: NOW + baker.task.duration });
+  });
+
+  test('at work without wheat: wait', () => {
+    const step = decideJobStep(newJob('baker'), baker, bakery, {
+      now: NOW,
+      hour: BAKER_ON_SHIFT,
+      position: bakery,
+      hasInputs: false,
+    });
+    expect(step).toEqual({ kind: 'waitForInputs' });
+  });
+
+  test('missing inputs does not stop the walk to work', () => {
+    const step = decideJobStep(newJob('baker'), baker, bakery, {
+      now: NOW,
+      hour: BAKER_ON_SHIFT,
+      position: { x: 50, y: 40 },
+      hasInputs: false,
+    });
+    expect(step).toEqual({ kind: 'walkToWork', destination: bakery });
+  });
+});
+
+describe('farmer delivery (off shift)', () => {
+  const bakery = { x: 30, y: 20 };
+
+  test('no delivery due: off shift', () => {
+    const step = decideJobStep(newJob('farmer'), farmer, workplace, snapshot({ hour: OFF_SHIFT }));
+    expect(step).toEqual({ kind: 'offShift' });
+  });
+
+  test('delivery due and far away: walk to the bakery', () => {
+    const step = decideJobStep(
+      newJob('farmer'),
+      farmer,
+      workplace,
+      snapshot({ hour: OFF_SHIFT, delivery: { destination: bakery } }),
+    );
+    expect(step).toEqual({ kind: 'walkToDelivery', destination: bakery });
+  });
+
+  test('delivery due and arrived: deliver', () => {
+    const step = decideJobStep(
+      newJob('farmer'),
+      farmer,
+      workplace,
+      snapshot({ hour: OFF_SHIFT, position: bakery, delivery: { destination: bakery } }),
+    );
+    expect(step).toEqual({ kind: 'deliver' });
+  });
+
+  test('delivery is ignored during the shift', () => {
+    const step = decideJobStep(
+      newJob('farmer'),
+      farmer,
+      workplace,
+      snapshot({ delivery: { destination: bakery } }),
+    );
+    expect(step.kind).toBe('startTask');
+  });
+
+  test('deliveryDue needs a minimum batch and respects the cooldown', () => {
+    const min = farmer.delivery!.minBatch;
+    expect(deliveryDue(newJob('farmer'), farmer, min - 1, NOW)).toBe(false);
+    expect(deliveryDue(newJob('farmer'), farmer, min, NOW)).toBe(true);
+    const recent = { ...newJob('farmer'), lastDeliveryAt: NOW - 1_000 };
+    expect(deliveryDue(recent, farmer, min, NOW)).toBe(false);
+    const old = { ...newJob('farmer'), lastDeliveryAt: NOW - DELIVERY_COOLDOWN };
+    expect(deliveryDue(old, farmer, min, NOW)).toBe(true);
+    expect(deliveryDue(newJob('baker'), JOB_DEFINITIONS.baker, 99, NOW)).toBe(false);
+  });
+});
+
 describe('shift rules', () => {
   test('isOnShift follows the shift window', () => {
     expect(isOnShift(newJob('farmer'), ON_SHIFT)).toBe(true);
@@ -223,6 +311,7 @@ describe('shift rules', () => {
 
 test('isJobKind', () => {
   expect(isJobKind('farmer')).toBe(true);
+  expect(isJobKind('baker')).toBe(true);
   expect(isJobKind('wizard')).toBe(false);
   expect(isJobKind(undefined)).toBe(false);
 });

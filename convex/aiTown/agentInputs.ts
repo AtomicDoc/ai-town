@@ -1,5 +1,6 @@
 import { v } from 'convex/values';
-import { agentId, conversationId, parseGameId } from './ids';
+import { agentId, conversationId, parseGameId, playerId } from './ids';
+import { addItem, itemKind, removeItem } from './inventory';
 import { Player, activity } from './player';
 import { Conversation, conversationInputs } from './conversation';
 import { movePlayer } from './movement';
@@ -122,6 +123,32 @@ export const agentInputs = {
         conversation.leave(game, now, player);
       }
       return null;
+    },
+  }),
+  // Testing helper: adjust a player's items and/or coins (negative = take).
+  debugGive: inputHandler({
+    args: {
+      playerId,
+      item: v.optional(itemKind),
+      quantity: v.optional(v.number()),
+      coins: v.optional(v.number()),
+    },
+    handler: (game, now, args) => {
+      const player = game.world.players.get(parseGameId('players', args.playerId));
+      if (!player) {
+        throw new Error(`Couldn't find player: ${args.playerId}`);
+      }
+      if (args.item && args.quantity) {
+        if (args.quantity > 0) {
+          addItem(player.inventory, args.item, args.quantity);
+        } else if (!removeItem(player.inventory, args.item, -args.quantity)) {
+          throw new Error(`${player.id} doesn't have ${-args.quantity} ${args.item}`);
+        }
+      }
+      if (args.coins) {
+        player.coins = Math.max(0, player.coins + Math.trunc(args.coins));
+      }
+      return { inventory: { ...player.inventory }, coins: player.coins };
     },
   }),
   // Give an agent a scripted job, or remove it with `job: null`. Assigning

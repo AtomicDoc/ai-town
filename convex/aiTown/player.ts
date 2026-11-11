@@ -16,6 +16,7 @@ import { inputHandler } from './inputHandler';
 import { characters } from '../../data/characters';
 import { PlayerDescription } from './playerDescription';
 import { Inventory, parseInventory, serializedInventory } from './inventory';
+import { parseCoins } from './economy';
 
 const pathfinding = v.object({
   destination: point,
@@ -58,6 +59,8 @@ export const serializedPlayer = {
 
   // Items held (M2, see inventory.ts). Omitted when empty.
   inventory: v.optional(serializedInventory),
+  // Money (M2, see economy.ts). Missing on older saves -> STARTING_COINS.
+  coins: v.optional(v.number()),
 };
 export type SerializedPlayer = ObjectType<typeof serializedPlayer>;
 
@@ -74,6 +77,7 @@ export class Player {
   speed: number;
 
   inventory: Inventory;
+  coins: number;
 
   constructor(serialized: SerializedPlayer) {
     const { id, human, pathfinding, activity, lastInput, position, facing, speed } = serialized;
@@ -86,6 +90,7 @@ export class Player {
     this.facing = facing;
     this.speed = speed;
     this.inventory = parseInventory(serialized.inventory);
+    this.coins = parseCoins(serialized.coins);
   }
 
   tick(game: Game, now: number) {
@@ -270,6 +275,7 @@ export class Player {
         Object.keys(this.inventory).length > 0
           ? ({ ...this.inventory } as Record<string, number>)
           : undefined,
+      coins: this.coins,
     };
   }
 }

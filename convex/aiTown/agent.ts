@@ -102,12 +102,13 @@ export class Agent {
       player.activity!.until = now;
     }
     // Scripted job routine (M2). Runs in the engine with no LLM call. Skipped
-    // while in a conversation (conversations take priority).
-    if (!conversation && this.job && working) {
-      // Save a finished conversation to memory first. Handle it here rather than
-      // falling through to agentDoSomething, which would make the worker wander
-      // off and invite someone new mid-shift.
-      if (this.toRemember) {
+    // while in a conversation (conversations take priority). Off shift it only
+    // takes over for deliveries; otherwise tickJob returns false.
+    if (!conversation && this.job) {
+      // On shift, save a finished conversation to memory first. Handle it here
+      // rather than falling through to agentDoSomething, which would make the
+      // worker wander off and invite someone new mid-shift.
+      if (working && this.toRemember) {
         this.startRemembering(game, now);
         return;
       }
