@@ -4,6 +4,7 @@ import { characters } from '../data/characters';
 import { insertInput } from './aiTown/insertInput';
 import {
   DEFAULT_NAME,
+  HUMAN_DISPLAY_NAME,
   ENGINE_ACTION_DURATION,
   IDLE_WORLD_TIMEOUT,
   WORLD_HEARTBEAT_INTERVAL,
@@ -124,7 +125,9 @@ export const joinWorld = mutation({
     // }
     // const name =
     //   identity.givenName || identity.nickname || (identity.email && identity.email.split('@')[0]);
-    const name = DEFAULT_NAME;
+    // Display name shown to NPCs (and in their prompts). DEFAULT_NAME stays the
+    // token that identifies "your" player in the frontend.
+    const name = HUMAN_DISPLAY_NAME;
 
     // if (!name) {
     //   throw new ConvexError(`Missing name on ${JSON.stringify(identity)}`);
@@ -137,7 +140,7 @@ export const joinWorld = mutation({
     return await insertInput(ctx, world._id, 'join', {
       name,
       character: characters[Math.floor(Math.random() * characters.length)].name,
-      description: `${DEFAULT_NAME} is a human player`,
+      description: `${HUMAN_DISPLAY_NAME} is a traveler who has just arrived in the village.`,
       // description: `${identity.givenName} is a human player`,
       tokenIdentifier: DEFAULT_NAME,
     });

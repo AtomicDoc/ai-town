@@ -127,5 +127,7 @@ export const characters = [
   },
 ];
 
-// Characters move at 0.75 tiles per second.
-export const movementSpeed = 0.75;
+// Characters (NPCs and the human player) move at 2 tiles per second.
+// AI Town's default was 0.75, which made cross-map walks take ~2 minutes and
+// exceed PATHFINDING_TIMEOUT (60 s); at 2 tiles/s the longest walks take ~45 s.
+export const movementSpeed = 2;

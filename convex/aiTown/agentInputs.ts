@@ -1,6 +1,7 @@
 import { v } from 'convex/values';
 import { agentId, conversationId, parseGameId, playerId } from './ids';
 import { addItem, itemKind, removeItem } from './inventory';
+import { gossipFromLine } from './relationships';
 import { Player, activity } from './player';
 import { Conversation, conversationInputs } from './conversation';
 import { movePlayer } from './movement';
@@ -99,6 +100,7 @@ export const agentInputs = {
       timestamp: v.number(),
       operationId: v.string(),
       leaveConversation: v.boolean(),
+      text: v.optional(v.string()),
     },
     handler: (game, now, args) => {
       const agentId = parseGameId('agents', args.agentId);
@@ -123,6 +125,17 @@ export const agentInputs = {
         return null;
       }
       delete agent.inProgressOperation;
+      // Gossip: listeners learn only the beliefs this line actually talks about.
+      if (args.text) {
+        for (const listenerId of conversation.participants.keys()) {
+          if (listenerId === agent.playerId) continue;
+          for (const b of gossipFromLine(game, agent.playerId, listenerId, args.text)) {
+            console.log(
+              `[belief] ${agent.playerId} told ${listenerId} that ${b.thief} stole ${b.quantity} ${b.item} from ${b.victim}: "${args.text.slice(0, 120)}"`,
+            );
+          }
+        }
+      }
       conversationInputs.finishSendingMessage.handler(game, now, {
         playerId: agent.playerId,
         conversationId: args.conversationId,

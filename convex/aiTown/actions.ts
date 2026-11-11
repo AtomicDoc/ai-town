@@ -145,16 +145,16 @@ export function performPlayerAction(
       if (!transferItem(target.inventory, actor.inventory, item, 1)) {
         throw new Error(`You can't carry any more ${item}.`);
       }
-      const { witnesses, victimSaw } = recordTheft(game, now, actor.id, target.id, item, 1);
+      const { witnesses, victimKnows } = recordTheft(game, now, actor.id, target.id, item, 1);
       console.log(
-        `[action] ${actor.id} stole 1 ${item} from ${target.id}; victim saw: ${victimSaw}; witnesses: ${
+        `[action] ${actor.id} stole 1 ${item} from ${target.id}; victim knows: ${victimKnows}; witnesses: ${
           witnesses.join(', ') || 'none'
         }`,
       );
-      const seen = [...(victimSaw ? [targetName] : []), ...witnesses.map((id) => nameOf(game, id))];
-      return `You stole 1 ${item} from ${targetName}. ${
-        seen.length ? `Seen by: ${seen.join(', ')}.` : 'Nobody saw you.'
-      }`;
+      const seen = witnesses.map((id) => nameOf(game, id));
+      return `You stole 1 ${item} from ${targetName}.${
+        victimKnows ? ` ${targetName} will know it was you.` : ''
+      } ${seen.length ? `Seen by: ${seen.join(', ')}.` : 'No one else saw you.'}`;
     }
     case 'help':
     case 'interfere': {
