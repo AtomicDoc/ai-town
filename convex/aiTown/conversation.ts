@@ -196,7 +196,12 @@ export class Conversation {
       const agent = [...game.world.agents.values()].find((a) => a.playerId === playerId);
       if (agent) {
         agent.lastConversation = now;
-        agent.toRemember = this.id;
+        // Nothing to remember from a rejected invite or a conversation with no
+        // messages (rememberConversation skips those anyway), so don't spend an
+        // agent operation on it.
+        if (this.numMessages > 0) {
+          agent.toRemember = this.id;
+        }
       }
     }
     game.world.conversations.delete(this.id);
