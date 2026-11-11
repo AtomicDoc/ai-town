@@ -1,5 +1,7 @@
 import { v } from 'convex/values';
-import { internalAction, internalQuery } from '../_generated/server';
+import { ActionCtx, internalAction, internalQuery } from '../_generated/server';
+import { Id } from '../_generated/dataModel';
+import { IdlePlan, PLACES, idlePrompt, parseIdlePlan } from './idle';
 import {
   DecisionChoice,
   EVENT_OPTIONS,
@@ -8,6 +10,7 @@ import {
   describeEvent,
   parseChoice,
   serializedEvent,
+  policyMode,
 } from './decisionPolicy';
 import { chatCompletion } from '../util/llm';
 import { llmTrace } from '../util/llmTrace';
@@ -125,6 +128,16 @@ export const agentDoSomething = internalAction({
     const recentActivity = player.activity && now < player.activity.until + ACTIVITY_COOLDOWN;
     // Decide whether to do an activity or wander somewhere.
     if (!player.pathfinding) {
+      // Config C (llm-heavy): the LLM decides where to go and what to do.
+      if (policyMode() === 'llm-heavy') {
+        const plan = await planIdleWithLlm(ctx, args.worldId, player.id);
+        await ctx.runMutation(api.aiTown.main.sendInput, {
+          worldId: args.worldId,
+          name: 'finishDoSomething',
+          args: { operationId: args.operationId, agentId: agent.id, plan },
+        });
+        return;
+      }
       if (recentActivity || justLeftConversation) {
         await sleep(Math.random() * 1000);
         await ctx.runMutation(api.aiTown.main.sendInput, {
@@ -283,6 +296,60 @@ export const agentDecide = internalAction({
     });
   },
 });
+
+/**
+ * Config C: ask the LLM where the NPC goes and what it does in its free time.
+ * Falls back to a random place and stock activity if the reply is unusable.
+ */
+async function planIdleWithLlm(
+  ctx: ActionCtx,
+  worldId: Id<'worlds'>,
+  playerId: string,
+): Promise<IdlePlan> {
+  const started = Date.now();
+  const randomPlace = PLACES[Math.floor(Math.random() * PLACES.length)];
+  let parsed: ReturnType<typeof parseIdlePlan>;
+  try {
+    const data = await ctx.runQuery(internal.aiTown.agentOperations.decisionPromptData, {
+      worldId,
+      playerId: playerId as GameId<'players'>,
+    });
+    const nameOf = (id: string) => data.names.find((n) => n.playerId === id)?.name ?? 'someone';
+    const name = nameOf(playerId);
+    const { content } = await chatCompletion(
+      {
+        messages: idlePrompt({
+          name,
+          identity: data.identity,
+          context: livelihoodPrompts(
+            { name, ...data.player },
+            data.agent,
+            { name: '' },
+            null,
+            Date.now(),
+          ),
+        }),
+        max_tokens: 40,
+        temperature: 0.9,
+      },
+      llmTrace(ctx, 'decision.idle', playerId),
+    );
+    parsed = parseIdlePlan(content, randomPlace);
+    console.log(`[idle] ${playerId} LLM replied "${content.trim()}"`);
+  } catch (e) {
+    console.error(`[idle] LLM idle plan failed for ${playerId}: ${String(e)}`);
+  }
+  const fallback = ACTIVITIES[Math.floor(Math.random() * ACTIVITIES.length)];
+  const place = parsed?.place ?? randomPlace;
+  return {
+    destination: place.target,
+    place: place.name,
+    description: parsed?.description ?? fallback.description,
+    emoji: parsed?.emoji ?? fallback.emoji,
+    mode: parsed ? 'llm' : 'llm-fallback',
+    latencyMs: Date.now() - started,
+  };
+}
 
 function wanderDestination(worldMap: WorldMap) {
   // Wander someonewhere at least one tile away from the edge.
