@@ -109,6 +109,77 @@ export function getLLMConfig(): LLMConfig {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Call tracing (M4 metrics). Callers pass a trace built with
+// convex/util/llmTrace.ts; this file stays import-free.
+// ---------------------------------------------------------------------------
+
+export type LlmCallRecord = {
+  kind: 'chat' | 'embedding';
+  purpose: string;
+  playerId?: string;
+  model: string;
+  startedAt: number;
+  durationMs: number;
+  retries: number;
+  promptTokens?: number;
+  completionTokens?: number;
+  inputs?: number;
+  ok: boolean;
+  error?: string;
+};
+
+export type LlmTrace = {
+  purpose: string;
+  playerId?: string;
+  /** Persist the record. Must not throw (llmTrace.ts swallows errors). */
+  record: (row: LlmCallRecord) => Promise<void>;
+};
+
+async function traceCall<T>(
+  trace: LlmTrace | undefined,
+  base: { kind: 'chat' | 'embedding'; model: string; inputs?: number },
+  run: () => Promise<{
+    value: T;
+    retries: number;
+    promptTokens?: number;
+    completionTokens?: number;
+  }>,
+): Promise<{ value: T; retries: number }> {
+  const startedAt = Date.now();
+  try {
+    const out = await run();
+    if (trace) {
+      await trace.record({
+        ...base,
+        purpose: trace.purpose,
+        playerId: trace.playerId,
+        startedAt,
+        durationMs: Date.now() - startedAt,
+        retries: out.retries,
+        promptTokens: out.promptTokens,
+        completionTokens: out.completionTokens,
+        ok: true,
+      });
+    }
+    return out;
+  } catch (e) {
+    if (trace) {
+      await trace.record({
+        ...base,
+        purpose: trace.purpose,
+        playerId: trace.playerId,
+        startedAt,
+        durationMs: Date.now() - startedAt,
+        retries: 0,
+        ok: false,
+        error: String((e as Error)?.message ?? e).slice(0, 500),
+      });
+    }
+    throw e;
+  }
+}
+
 const AuthHeaders = (): Record<string, string> =>
   getLLMConfig().apiKey
     ? {
@@ -123,6 +194,7 @@ export async function chatCompletion(
   } & {
     stream?: false | null | undefined;
   },
+  trace?: LlmTrace,
 ): Promise<{ content: string; retries: number; ms: number }>;
 // Overload for streaming
 export async function chatCompletion(
@@ -131,22 +203,37 @@ export async function chatCompletion(
   } & {
     stream?: true;
   },
+  trace?: LlmTrace,
 ): Promise<{ content: ChatCompletionContent; retries: number; ms: number }>;
 export async function chatCompletion(
   body: Omit<CreateChatCompletionRequest, 'model'> & {
     model?: CreateChatCompletionRequest['model'];
   },
+  trace?: LlmTrace,
 ) {
   const config = getLLMConfig();
   body.model = body.model ?? config.chatModel;
   const stopWords = body.stop ? (typeof body.stop === 'string' ? [body.stop] : body.stop) : [];
   if (config.stopWords) stopWords.push(...config.stopWords);
   console.log(body);
-  const {
-    result: content,
-    retries,
-    ms,
-  } = await retryWithBackoff(async () => {
+  const started = Date.now();
+  let usage: CreateChatCompletionResponse['usage'];
+  const { value, retries } = await traceCall(
+    trace,
+    { kind: 'chat', model: body.model },
+    async () => {
+      const out = await retryWithBackoff(() => requestChat());
+      return {
+        value: out.result,
+        retries: out.retries,
+        promptTokens: usage?.prompt_tokens,
+        completionTokens: usage?.completion_tokens,
+      };
+    },
+  );
+  return { content: value, retries, ms: Date.now() - started };
+
+  async function requestChat(): Promise<string | ChatCompletionContent> {
     const result = await fetch(config.url + '/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -175,16 +262,11 @@ export async function chatCompletion(
       if (content === undefined) {
         throw new Error('Unexpected result from OpenAI: ' + JSON.stringify(json));
       }
+      usage = json.usage;
       console.log(content);
       return content;
     }
-  });
-
-  return {
-    content,
-    retries,
-    ms,
-  };
+  }
 }
 
 export async function tryPullOllama(model: string, error: string) {
@@ -202,15 +284,18 @@ export async function tryPullOllama(model: string, error: string) {
   }
 }
 
-export async function fetchEmbeddingBatch(texts: string[]) {
+export async function fetchEmbeddingBatch(texts: string[], trace?: LlmTrace) {
   const config = getLLMConfig();
   if (config.provider === 'ollama') {
-    return {
-      ollama: true as const,
-      embeddings: await Promise.all(
-        texts.map(async (t) => (await ollamaFetchEmbedding(t)).embedding),
-      ),
-    };
+    const { value: embeddings } = await traceCall(
+      trace,
+      { kind: 'embedding', model: config.embeddingModel, inputs: texts.length },
+      async () => ({
+        value: await Promise.all(texts.map(async (t) => (await ollamaFetchEmbedding(t)).embedding)),
+        retries: 0,
+      }),
+    );
+    return { ollama: true as const, embeddings };
   }
   const {
     result: json,
@@ -252,8 +337,8 @@ export async function fetchEmbeddingBatch(texts: string[]) {
   };
 }
 
-export async function fetchEmbedding(text: string) {
-  const { embeddings, ...stats } = await fetchEmbeddingBatch([text]);
+export async function fetchEmbedding(text: string, trace?: LlmTrace) {
+  const { embeddings, ...stats } = await fetchEmbeddingBatch([text], trace);
   return { embedding: embeddings[0], ...stats };
 }
 
