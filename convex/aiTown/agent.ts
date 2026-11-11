@@ -31,6 +31,12 @@ import {
 } from './jobs';
 import { gameHour } from './clock';
 
+/** True if `playerId` belongs to an agent currently working a job shift. */
+function isOnShiftWorker(game: Game, playerId: GameId<'players'>, now: number): boolean {
+  const agent = [...game.world.agents.values()].find((a) => a.playerId === playerId);
+  return agent?.job !== undefined && isOnShift(agent.job, gameHour(now));
+}
+
 export class Agent {
   id: GameId<'agents'>;
   playerId: GameId<'players'>;
@@ -74,6 +80,20 @@ export class Agent {
     }
     const conversation = game.world.playerConversation(player);
     const member = conversation?.participants.get(player.id);
+    const working = this.job !== undefined && isOnShift(this.job, gameHour(now));
+
+    // On-shift workers turn down agent invites here, before the activity check
+    // below: a pending invite counts as "in a conversation" and would cancel
+    // the work task in progress even though the invite is about to be declined.
+    if (working && conversation && member?.status.kind === 'invited') {
+      const inviterId = [...conversation.participants.keys()].find((id) => id !== player.id);
+      const inviter = inviterId && game.world.players.get(inviterId);
+      if (!shouldAcceptInviteWhileWorking(!!(inviter && inviter.human))) {
+        console.log(`Agent ${player.id} (working) rejecting invite from ${inviterId}`);
+        conversation.rejectInvite(game, now, player);
+        return;
+      }
+    }
 
     const recentlyAttemptedInvite =
       this.lastInviteAttempt && now < this.lastInviteAttempt + CONVERSATION_COOLDOWN;
@@ -83,7 +103,7 @@ export class Agent {
     }
     // Scripted job routine (M2). Runs in the engine with no LLM call. Skipped
     // while in a conversation (conversations take priority).
-    if (!conversation && this.job && isOnShift(this.job, gameHour(now))) {
+    if (!conversation && this.job && working) {
       // Save a finished conversation to memory first. Handle it here rather than
       // falling through to agentDoSomething, which would make the worker wander
       // off and invite someone new mid-shift.
@@ -108,6 +128,8 @@ export class Agent {
           .filter(
             (p) => ![...game.world.conversations.values()].find((c) => c.participants.has(p.id)),
           )
+          // Don't invite agents who are working their shift.
+          .filter((p) => !isOnShiftWorker(game, p.id, now))
           .map((p) => p.serialize()),
         agent: this.serialize(),
         map: game.worldMap.serialize(),
@@ -126,8 +148,7 @@ export class Agent {
       const otherPlayer = game.world.players.get(otherPlayerId)!;
       if (member.status.kind === 'invited') {
         // Accept a conversation with another agent with some probability and with
-        // a human unconditionally. On-shift workers decline other agents.
-        const working = this.job !== undefined && isOnShift(this.job, gameHour(now));
+        // a human unconditionally. (On-shift workers already declined agents above.)
         const accept = working
           ? shouldAcceptInviteWhileWorking(!!otherPlayer.human)
           : otherPlayer.human || Math.random() < INVITE_ACCEPT_PROBABILITY;
