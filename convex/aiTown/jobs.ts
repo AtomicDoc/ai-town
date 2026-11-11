@@ -2,11 +2,18 @@
 //
 // A job is a scripted routine: during shift hours the agent walks to its
 // workplace and repeats a work task. A task may consume input items (baker:
-// 2 wheat) and produces output items (bread). After the shift, a job may
-// deliver its output to another job's workplace and sell it there (farmer
-// sells wheat to the baker). None of this schedules an agent operation, so a
-// working agent makes zero LLM calls. When there's nothing to do, the agent
-// falls back to stock AI Town behavior (wandering, conversations).
+// 2 wheat) and may produce output items (bread). Around the work itself:
+//   - restock: at/during the shift, buy supplies from another job's workplace
+//     (shopkeeper buys bread from the bakery), up to a stock target;
+//   - delivery: after the shift, carry output to another job's workplace and
+//     sell it there (farmers sell wheat to the bakery), limited by the buyer's
+//     stock target and split fairly between suppliers.
+// Workplaces are self-serve: trades happen with the owner's stock and purse
+// whether or not the owner is standing there.
+//
+// None of this schedules an agent operation, so a working agent makes zero
+// LLM calls. When there's nothing to do, the agent falls back to stock
+// AI Town behavior (wandering, conversations).
 //
 // Structure:
 //   - decideJobStep(): pure decision function, unit-tested in jobs.test.ts.
@@ -19,10 +26,10 @@ import { Infer, ObjectType, v } from 'convex/values';
 import { Point, point } from '../util/types';
 import { distance } from '../util/geometry';
 import { GAME_DAY_LENGTH } from '../constants';
-import { gameHour, inHourWindow } from './clock';
+import { formatGameTime, gameHour, inHourWindow } from './clock';
 import { movePlayer } from './movement';
 import { ItemKind, addItem, countItem, removeItem } from './inventory';
-import { PRICES, sellUpTo } from './economy';
+import { WHOLESALE_PRICES, sellUpTo } from './economy';
 import type { Game } from './game';
 import type { Player } from './player';
 
@@ -30,9 +37,14 @@ import type { Player } from './player';
 // Definitions
 // ---------------------------------------------------------------------------
 
-export const jobKind = v.union(v.literal('farmer'), v.literal('baker'));
+export const jobKind = v.union(
+  v.literal('farmer'),
+  v.literal('farmhand'),
+  v.literal('baker'),
+  v.literal('shopkeeper'),
+);
 export type JobKind = Infer<typeof jobKind>;
-export const JOB_KINDS: readonly JobKind[] = ['farmer', 'baker'];
+export const JOB_KINDS: readonly JobKind[] = ['farmer', 'farmhand', 'baker', 'shopkeeper'];
 
 export function isJobKind(value: unknown): value is JobKind {
   return typeof value === 'string' && (JOB_KINDS as readonly string[]).includes(value);
@@ -40,9 +52,11 @@ export function isJobKind(value: unknown): value is JobKind {
 
 export type JobDefinition = {
   title: string;
+  /** Short place name for prompts/UI. */
+  place: string;
   /** Preferred workplace tile; resolved to the nearest walkable tile at runtime. */
   workplaceTarget: Point;
-  /** Shift window in game hours, [start, end). May wrap past midnight. */
+  /** Default shift window in game hours, [start, end). May wrap past midnight. */
   shiftStartHour: number;
   shiftEndHour: number;
   /** One unit of work, shown in the UI as the player's activity. */
@@ -53,29 +67,47 @@ export type JobDefinition = {
     /** Items used up by one task. The task only starts if they're held. */
     consumes?: { item: ItemKind; amount: number };
   };
-  /** What one completed task adds to the worker's inventory. */
-  output: { item: ItemKind; amount: number };
+  /** What one completed task adds to the worker's inventory, if anything. */
+  output?: { item: ItemKind; amount: number };
   /** Shown while on shift at work but missing the task's inputs. */
   waitingActivity?: { description: string; emoji: string };
+  /** How much of an item this job wants on hand; caps what it buys. */
+  stockTarget?: { item: ItemKind; amount: number };
+  /** On shift, buy `stockTarget` item from the `fromJob` workplace when low. */
+  restock?: { fromJob: JobKind; below: number };
   /** After the shift, carry `item` to the `toJob` worker's workplace and sell it. */
   delivery?: { item: ItemKind; toJob: JobKind; minBatch: number };
 };
 
+const FIELD: Point = { x: 56, y: 40 }; // open field, lower right of the "gentle" map
+const BAKERY: Point = { x: 30, y: 20 }; // upper middle
+const SHOP: Point = { x: 42, y: 30 }; // center, reachable from field and bakery
+
 export const JOB_DEFINITIONS: Record<JobKind, JobDefinition> = {
   farmer: {
     title: 'farmer',
-    // Open field in the lower-right of the default "gentle" map (64x48).
-    workplaceTarget: { x: 56, y: 40 },
+    place: 'the wheat field',
+    workplaceTarget: FIELD,
     shiftStartHour: 6,
     shiftEndHour: 16,
     task: { description: 'farming', emoji: '🌾', duration: 30_000 },
     output: { item: 'wheat', amount: 1 },
     delivery: { item: 'wheat', toJob: 'baker', minBatch: 4 },
   },
+  farmhand: {
+    title: 'farmhand',
+    place: 'the wheat field',
+    workplaceTarget: FIELD,
+    shiftStartHour: 10,
+    shiftEndHour: 18,
+    task: { description: 'farming', emoji: '🌾', duration: 40_000 },
+    output: { item: 'wheat', amount: 1 },
+    delivery: { item: 'wheat', toJob: 'baker', minBatch: 4 },
+  },
   baker: {
     title: 'baker',
-    // Open ground in the upper-middle of the map, reachable from the field.
-    workplaceTarget: { x: 30, y: 20 },
+    place: 'the bakery',
+    workplaceTarget: BAKERY,
     // Bakes in the morning with wheat delivered the previous afternoon.
     shiftStartHour: 4,
     shiftEndHour: 12,
@@ -87,6 +119,19 @@ export const JOB_DEFINITIONS: Record<JobKind, JobDefinition> = {
     },
     output: { item: 'bread', amount: 1 },
     waitingActivity: { description: 'waiting for wheat', emoji: '⏳' },
+    // About a day of baking; farmers can't sell more wheat than this.
+    stockTarget: { item: 'wheat', amount: 18 },
+  },
+  shopkeeper: {
+    title: 'shopkeeper',
+    place: 'the village shop',
+    workplaceTarget: SHOP,
+    // Default morning shift; a second shopkeeper overrides it (see characters.ts).
+    shiftStartHour: 6,
+    shiftEndHour: 14,
+    task: { description: 'tending the shop', emoji: '🧺', duration: 60_000 },
+    stockTarget: { item: 'bread', amount: 6 },
+    restock: { fromJob: 'baker', below: 3 },
   },
 };
 
@@ -96,6 +141,9 @@ export const WORKPLACE_ARRIVAL_DISTANCE = 2;
 /** Minimum time between delivery attempts, so a failed sale doesn't loop. */
 export const DELIVERY_COOLDOWN = GAME_DAY_LENGTH / 2;
 
+/** Minimum time between restock attempts. */
+export const RESTOCK_COOLDOWN = GAME_DAY_LENGTH / 6;
+
 /** How long one "waiting for inputs" activity lasts before being re-checked/refreshed. */
 export const WAITING_ACTIVITY_DURATION = 15_000;
 
@@ -103,8 +151,12 @@ export const WAITING_ACTIVITY_DURATION = 15_000;
 // Serialized state (stored on the agent inside the world document)
 // ---------------------------------------------------------------------------
 
+export const jobShift = v.object({ start: v.number(), end: v.number() });
+
 export const serializedJob = {
   kind: jobKind,
+  /** Per-worker shift override (game hours), e.g. a second shopkeeper's evening shift. */
+  shift: v.optional(jobShift),
   /** Resolved walkable workplace tile. Unset until first tick. */
   workplace: v.optional(point),
   /** Set while a work task is in progress; equals the task activity's `until`. */
@@ -113,11 +165,25 @@ export const serializedJob = {
   produced: v.number(),
   /** When the last delivery was attempted (successful or not). */
   lastDeliveryAt: v.optional(v.number()),
+  /** When the last restock was attempted (successful or not). */
+  lastRestockAt: v.optional(v.number()),
 };
 export type SerializedJob = ObjectType<typeof serializedJob>;
 
-export function newJob(kind: JobKind): SerializedJob {
-  return { kind, produced: 0 };
+export function newJob(kind: JobKind, shift?: { start: number; end: number }): SerializedJob {
+  return shift ? { kind, shift, produced: 0 } : { kind, produced: 0 };
+}
+
+/** The job's effective shift window. */
+export function shiftWindow(job: SerializedJob): { start: number; end: number } {
+  const def = JOB_DEFINITIONS[job.kind];
+  return job.shift ?? { start: def.shiftStartHour, end: def.shiftEndHour };
+}
+
+/** "06:00–14:00" */
+export function describeShift(job: SerializedJob): string {
+  const { start, end } = shiftWindow(job);
+  return `${formatGameTime(start)}–${formatGameTime(end)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -134,14 +200,18 @@ export type JobSnapshot = {
   hasInputs: boolean;
   /** Set when a delivery is due now: where to take it. */
   delivery?: { destination: Point };
+  /** Set when a restock is due now: where to buy. */
+  restock?: { destination: Point };
 };
 
 export type JobStep =
   | { kind: 'offShift' }
   | { kind: 'walkToWork'; destination: Point }
   | { kind: 'walkToDelivery'; destination: Point }
+  | { kind: 'walkToRestock'; destination: Point }
   | { kind: 'walking' }
   | { kind: 'deliver' }
+  | { kind: 'restock' }
   | { kind: 'waitForInputs' }
   | { kind: 'startTask'; until: number }
   | { kind: 'working' }
@@ -149,8 +219,8 @@ export type JobStep =
   | { kind: 'abandonTask' };
 
 /** Walk to `target`, or report that we've arrived and stopped moving. */
-function approach(
-  s: JobSnapshot,
+export function approach(
+  s: { position: Point; pathfindingDestination?: Point },
   target: Point,
   walkStep: (destination: Point) => JobStep,
 ): JobStep | 'arrived' {
@@ -190,7 +260,8 @@ export function decideJobStep(
 
   // 2. Off shift: deliver output if a delivery is due, otherwise let stock
   // AI Town behavior run.
-  if (!inHourWindow(s.hour, def.shiftStartHour, def.shiftEndHour)) {
+  const { start, end } = shiftWindow(job);
+  if (!inHourWindow(s.hour, start, end)) {
     if (!s.delivery) {
       return { kind: 'offShift' };
     }
@@ -201,13 +272,22 @@ export function decideJobStep(
     return step === 'arrived' ? { kind: 'deliver' } : step;
   }
 
-  // 3. On shift: get to work.
+  // 3. On shift: fetch supplies first if running low.
+  if (s.restock) {
+    const step = approach(s, s.restock.destination, (destination) => ({
+      kind: 'walkToRestock',
+      destination,
+    }));
+    return step === 'arrived' ? { kind: 'restock' } : step;
+  }
+
+  // 4. Get to work.
   const step = approach(s, workplace, (destination) => ({ kind: 'walkToWork', destination }));
   if (step !== 'arrived') {
     return step;
   }
 
-  // 4. At work: start the next task if its inputs are on hand.
+  // 5. At work: start the next task if its inputs are on hand.
   if (!s.hasInputs) {
     return { kind: 'waitForInputs' };
   }
@@ -216,8 +296,8 @@ export function decideJobStep(
 
 /** True while the job's shift window covers `hour`, or a task is still finishing. */
 export function isOnShift(job: SerializedJob, hour: number): boolean {
-  const def = JOB_DEFINITIONS[job.kind];
-  return job.taskEndsAt !== undefined || inHourWindow(hour, def.shiftStartHour, def.shiftEndHour);
+  const { start, end } = shiftWindow(job);
+  return job.taskEndsAt !== undefined || inHourWindow(hour, start, end);
 }
 
 /** Whether the job should attempt a delivery now (ignoring where the recipient is). */
@@ -231,6 +311,38 @@ export function deliveryDue(
     return false;
   }
   return job.lastDeliveryAt === undefined || now - job.lastDeliveryAt >= DELIVERY_COOLDOWN;
+}
+
+/** Whether the job should go restock now (ignoring the supplier's stock). */
+export function restockDue(
+  job: SerializedJob,
+  def: JobDefinition,
+  held: number,
+  now: number,
+): boolean {
+  if (!def.restock || !def.stockTarget || held >= def.restock.below) {
+    return false;
+  }
+  return job.lastRestockAt === undefined || now - job.lastRestockAt >= RESTOCK_COOLDOWN;
+}
+
+/**
+ * How many units one supplier may sell to a buyer in one delivery: no more
+ * than the supplier holds, than the buyer still wants, or than the supplier's
+ * fair share of the buyer's target when several suppliers serve one buyer.
+ */
+export function deliveryQuantity(
+  held: number,
+  buyerHeld: number,
+  buyerTarget: number | undefined,
+  suppliers: number,
+): number {
+  if (buyerTarget === undefined) {
+    return held;
+  }
+  const wanted = Math.max(0, buyerTarget - buyerHeld);
+  const share = Math.ceil(buyerTarget / Math.max(1, suppliers));
+  return Math.max(0, Math.min(held, wanted, share));
 }
 
 /**
@@ -280,7 +392,7 @@ export function findOpenTile(
 // Engine integration
 // ---------------------------------------------------------------------------
 
-function resolveWorkplace(game: Game, job: SerializedJob): Point {
+export function resolveWorkplace(game: Game, job: SerializedJob): Point {
   if (!job.workplace) {
     const target = JOB_DEFINITIONS[job.kind].workplaceTarget;
     job.workplace = findOpenTile(game.worldMap, target) ?? target;
@@ -288,17 +400,30 @@ function resolveWorkplace(game: Game, job: SerializedJob): Point {
   return job.workplace;
 }
 
-/** First agent holding `kind` job, with its player. */
-function findWorker(game: Game, kind: JobKind) {
+/** All agents holding a `kind` job, with their players. */
+export function findWorkers(game: Game, kind: JobKind) {
+  const workers: { job: SerializedJob; player: Player }[] = [];
   for (const agent of game.world.agents.values()) {
     if (agent.job?.kind === kind) {
       const player = game.world.players.get(agent.playerId);
       if (player) {
-        return { job: agent.job, player };
+        workers.push({ job: agent.job, player });
       }
     }
   }
-  return undefined;
+  return workers;
+}
+
+/** Number of workers whose job delivers `item` to `toJob`. */
+function countSuppliers(game: Game, item: ItemKind, toJob: JobKind): number {
+  let n = 0;
+  for (const agent of game.world.agents.values()) {
+    const d = agent.job && JOB_DEFINITIONS[agent.job.kind].delivery;
+    if (d && d.item === item && d.toJob === toJob) {
+      n++;
+    }
+  }
+  return n;
 }
 
 /**
@@ -315,12 +440,30 @@ export function tickJob(game: Game, now: number, job: SerializedJob, player: Pla
   const consumes = def.task.consumes;
   const hasInputs = !consumes || countItem(player.inventory, consumes.item) >= consumes.amount;
 
-  let recipient: ReturnType<typeof findWorker>;
+  // Delivery: sell output to the first recipient that still wants it.
+  let recipient: ReturnType<typeof findWorkers>[number] | undefined;
   let delivery: JobSnapshot['delivery'];
   if (def.delivery && deliveryDue(job, def, countItem(player.inventory, def.delivery.item), now)) {
-    recipient = findWorker(game, def.delivery.toJob);
-    if (recipient && recipient.player.id !== player.id) {
+    recipient = findWorkers(game, def.delivery.toJob).find((w) => w.player.id !== player.id);
+    if (recipient) {
       delivery = { destination: resolveWorkplace(game, recipient.job) };
+    }
+  }
+
+  // Restock: buy from the supplier with the most stock.
+  let supplier: ReturnType<typeof findWorkers>[number] | undefined;
+  let restock: JobSnapshot['restock'];
+  if (
+    def.restock &&
+    def.stockTarget &&
+    restockDue(job, def, countItem(player.inventory, def.stockTarget.item), now)
+  ) {
+    const item = def.stockTarget.item;
+    supplier = findWorkers(game, def.restock.fromJob)
+      .filter((w) => w.player.id !== player.id && countItem(w.player.inventory, item) > 0)
+      .sort((a, b) => countItem(b.player.inventory, item) - countItem(a.player.inventory, item))[0];
+    if (supplier && player.coins >= WHOLESALE_PRICES[item]) {
+      restock = { destination: resolveWorkplace(game, supplier.job) };
     }
   }
 
@@ -332,6 +475,7 @@ export function tickJob(game: Game, now: number, job: SerializedJob, player: Pla
     activity: player.activity,
     hasInputs,
     delivery,
+    restock,
   });
 
   switch (step.kind) {
@@ -342,7 +486,8 @@ export function tickJob(game: Game, now: number, job: SerializedJob, player: Pla
       return true;
     case 'walkToWork':
     case 'walkToDelivery':
-      // Drop any leftover stock activity (reading, daydreaming) before walking.
+    case 'walkToRestock':
+      // Drop any leftover activity (reading, daydreaming, waiting) before walking.
       if (player.activity && player.activity.until > now) {
         player.activity.until = now;
       }
@@ -351,12 +496,36 @@ export function tickJob(game: Game, now: number, job: SerializedJob, player: Pla
     case 'deliver': {
       const item = def.delivery!.item;
       const held = countItem(player.inventory, item);
-      const sold = recipient ? sellUpTo(player, recipient.player, item, held) : 0;
+      let sold = 0;
+      if (recipient) {
+        const target = JOB_DEFINITIONS[recipient.job.kind].stockTarget;
+        const quantity = deliveryQuantity(
+          held,
+          countItem(recipient.player.inventory, item),
+          target?.item === item ? target.amount : undefined,
+          countSuppliers(game, item, recipient.job.kind),
+        );
+        sold = sellUpTo(player, recipient.player, item, quantity, WHOLESALE_PRICES[item]);
+      }
       job.lastDeliveryAt = now;
       console.log(
         `[econ] ${player.id} (${def.title}) sold ${sold}/${held} ${item}` +
-          ` to ${recipient?.player.id} for ${sold * PRICES[item]} coins` +
+          ` to ${recipient?.player.id} for ${sold * WHOLESALE_PRICES[item]} coins` +
           ` (seller ${player.coins}, buyer ${recipient?.player.coins})`,
+      );
+      return true;
+    }
+    case 'restock': {
+      const item = def.stockTarget!.item;
+      const wanted = Math.max(0, def.stockTarget!.amount - countItem(player.inventory, item));
+      const bought = supplier
+        ? sellUpTo(supplier.player, player, item, wanted, WHOLESALE_PRICES[item])
+        : 0;
+      job.lastRestockAt = now;
+      console.log(
+        `[econ] ${player.id} (${def.title}) restocked ${bought}/${wanted} ${item}` +
+          ` from ${supplier?.player.id} for ${bought * WHOLESALE_PRICES[item]} coins` +
+          ` (buyer ${player.coins}, seller ${supplier?.player.coins})`,
       );
       return true;
     }
@@ -377,6 +546,9 @@ export function tickJob(game: Game, now: number, job: SerializedJob, player: Pla
       delete job.taskEndsAt;
       if (consumes && !removeItem(player.inventory, consumes.item, consumes.amount)) {
         console.log(`[job] ${player.id} (${def.title}) missing ${consumes.item}, nothing produced`);
+        return true;
+      }
+      if (!def.output) {
         return true;
       }
       job.produced += def.output.amount;

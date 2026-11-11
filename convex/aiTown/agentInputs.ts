@@ -12,6 +12,15 @@ import { Agent } from './agent';
 import { isJobKind, isOnShift, jobKind, newJob } from './jobs';
 import { gameHour } from './clock';
 
+/** The job (and shift override) a character in data/characters.ts should have. */
+function jobFromDescription(description: (typeof Descriptions)[number]) {
+  if (!('job' in description) || !isJobKind(description.job)) {
+    return undefined;
+  }
+  const shift = 'shift' in description ? description.shift : undefined;
+  return newJob(description.job, shift);
+}
+
 export const agentInputs = {
   finishRememberConversation: inputHandler({
     args: {
@@ -168,6 +177,46 @@ export const agentInputs = {
       return null;
     },
   }),
+  // Apply data/characters.ts (descriptions, goals, jobs, shifts) to an existing
+  // world, matching characters by name. Keeps job progress when the job and
+  // shift are unchanged.
+  syncCharacters: inputHandler({
+    args: {},
+    handler: (game, now) => {
+      const updated: string[] = [];
+      for (const description of Descriptions) {
+        const playerDescription = [...game.playerDescriptions.values()].find(
+          (d) => d.name === description.name,
+        );
+        if (!playerDescription) {
+          continue;
+        }
+        playerDescription.description = description.identity;
+        const agent = [...game.world.agents.values()].find(
+          (a) => a.playerId === playerDescription.playerId,
+        );
+        if (!agent) {
+          continue;
+        }
+        const agentDescription = game.agentDescriptions.get(agent.id);
+        if (agentDescription) {
+          agentDescription.identity = description.identity;
+          agentDescription.plan = description.plan;
+        }
+        const desired = jobFromDescription(description);
+        const unchanged =
+          desired &&
+          agent.job?.kind === desired.kind &&
+          JSON.stringify(agent.job.shift) === JSON.stringify(desired.shift);
+        if (!unchanged) {
+          agent.job = desired;
+        }
+        updated.push(`${description.name}: ${desired ? desired.kind : 'no job'}`);
+      }
+      game.descriptionsModified = true;
+      return updated;
+    },
+  }),
   createAgent: inputHandler({
     args: {
       descriptionIndex: v.number(),
@@ -191,10 +240,7 @@ export const agentInputs = {
           lastConversation: undefined,
           lastInviteAttempt: undefined,
           toRemember: undefined,
-          job:
-            'job' in description && isJobKind(description.job)
-              ? newJob(description.job)
-              : undefined,
+          job: jobFromDescription(description),
         }),
       );
       game.agentDescriptions.set(

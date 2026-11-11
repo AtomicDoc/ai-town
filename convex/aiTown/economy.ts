@@ -12,12 +12,19 @@ import { Inventory, ItemKind, MAX_STACK, countItem, transferItem } from './inven
 export const STARTING_COINS = 50;
 
 /**
- * Fixed unit prices. Bread is priced above the 2 wheat it takes to bake, so the
- * baker earns a margin and the chain farmer -> baker -> shopkeeper pays everyone.
+ * Fixed retail unit prices: what a villager pays at the shop. Each step of the
+ * chain earns a margin: farmer sells wheat at 2, the baker turns 2 wheat (4)
+ * into bread sold wholesale at 5, and the shop sells it at 7.
  */
 export const PRICES: Record<ItemKind, number> = {
   wheat: 2,
-  bread: 6,
+  bread: 7,
+};
+
+/** Fixed wholesale unit prices: what producers charge each other. */
+export const WHOLESALE_PRICES: Record<ItemKind, number> = {
+  wheat: 2,
+  bread: 5,
 };
 
 export type Wallet = { coins: number; inventory: Inventory };

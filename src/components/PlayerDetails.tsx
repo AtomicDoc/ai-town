@@ -10,6 +10,8 @@ import { Player } from '../../convex/aiTown/player';
 import { GameId } from '../../convex/aiTown/ids';
 import { ServerGame } from '../hooks/serverGame';
 import { describeInventory } from '../../convex/aiTown/inventory';
+import { JOB_DEFINITIONS, describeShift } from '../../convex/aiTown/jobs';
+import { hungerLevel } from '../../convex/aiTown/needs';
 
 export default function PlayerDetails({
   worldId,
@@ -48,6 +50,8 @@ export default function PlayerDetails({
   );
 
   const playerDescription = playerId && game.playerDescriptions.get(playerId);
+  const playerAgent =
+    playerId && [...game.world.agents.values()].find((a) => a.playerId === playerId);
 
   const startConversation = useSendInput(engineId, 'startConversation');
   const acceptInvite = useSendInput(engineId, 'acceptInvite');
@@ -228,6 +232,14 @@ export default function PlayerDetails({
           {Object.keys(player.inventory).length > 0 &&
             ` · Carrying: ${describeInventory(player.inventory)}`}
         </h2>
+        {playerAgent && (
+          <p className="bg-brown-700 text-sm text-center pb-1">
+            {playerAgent.job
+              ? `${JOB_DEFINITIONS[playerAgent.job.kind].title} · ${describeShift(playerAgent.job)}`
+              : 'no job'}
+            {` · hunger ${hungerLevel(playerAgent.needs?.lastAteAt, Date.now())}/100`}
+          </p>
+        )}
       </div>
       <div className="desc my-6">
         <p className="leading-tight -m-4 bg-brown-700 text-base sm:text-sm">

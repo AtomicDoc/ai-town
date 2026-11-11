@@ -2,7 +2,11 @@ import { gameHour, inHourWindow } from './clock';
 import {
   DELIVERY_COOLDOWN,
   JOB_DEFINITIONS,
+  RESTOCK_COOLDOWN,
   deliveryDue,
+  deliveryQuantity,
+  describeShift,
+  restockDue,
   JobSnapshot,
   SerializedJob,
   WORKPLACE_ARRIVAL_DISTANCE,
@@ -290,6 +294,74 @@ describe('farmer delivery (off shift)', () => {
     const old = { ...newJob('farmer'), lastDeliveryAt: NOW - DELIVERY_COOLDOWN };
     expect(deliveryDue(old, farmer, min, NOW)).toBe(true);
     expect(deliveryDue(newJob('baker'), JOB_DEFINITIONS.baker, 99, NOW)).toBe(false);
+  });
+});
+
+describe('shopkeeper (restock, no output)', () => {
+  const shopkeeper = JOB_DEFINITIONS.shopkeeper;
+  const shop = { x: 42, y: 30 };
+  const bakery = { x: 30, y: 20 };
+
+  test('restock due: walk to the bakery before going to the shop', () => {
+    const step = decideJobStep(newJob('shopkeeper'), shopkeeper, shop, {
+      now: NOW,
+      hour: 8,
+      position: shop,
+      hasInputs: true,
+      restock: { destination: bakery },
+    });
+    expect(step).toEqual({ kind: 'walkToRestock', destination: bakery });
+  });
+
+  test('restock due and at the bakery: restock', () => {
+    const step = decideJobStep(newJob('shopkeeper'), shopkeeper, shop, {
+      now: NOW,
+      hour: 8,
+      position: bakery,
+      hasInputs: true,
+      restock: { destination: bakery },
+    });
+    expect(step).toEqual({ kind: 'restock' });
+  });
+
+  test('restockDue: only when low, and not more often than the cooldown', () => {
+    const below = shopkeeper.restock!.below;
+    expect(restockDue(newJob('shopkeeper'), shopkeeper, below, NOW)).toBe(false);
+    expect(restockDue(newJob('shopkeeper'), shopkeeper, below - 1, NOW)).toBe(true);
+    const recent = { ...newJob('shopkeeper'), lastRestockAt: NOW - 1 };
+    expect(restockDue(recent, shopkeeper, 0, NOW)).toBe(false);
+    const old = { ...newJob('shopkeeper'), lastRestockAt: NOW - RESTOCK_COOLDOWN };
+    expect(restockDue(old, shopkeeper, 0, NOW)).toBe(true);
+    expect(restockDue(newJob('farmer'), farmer, 0, NOW)).toBe(false);
+  });
+
+  test('a shift override moves the working hours', () => {
+    const evening = newJob('shopkeeper', { start: 14, end: 22 });
+    expect(isOnShift(evening, 8)).toBe(false);
+    expect(isOnShift(evening, 18)).toBe(true);
+    expect(describeShift(evening)).toBe('14:00–22:00');
+    expect(describeShift(newJob('shopkeeper'))).toBe('06:00–14:00');
+    const step = decideJobStep(evening, shopkeeper, shop, {
+      now: NOW,
+      hour: 8,
+      position: shop,
+      hasInputs: true,
+    });
+    expect(step).toEqual({ kind: 'offShift' });
+  });
+});
+
+describe('deliveryQuantity', () => {
+  test('no buyer target: sell everything held', () => {
+    expect(deliveryQuantity(12, 0, undefined, 2)).toBe(12);
+  });
+  test('limited by what the buyer still wants', () => {
+    expect(deliveryQuantity(12, 15, 18, 1)).toBe(3);
+    expect(deliveryQuantity(12, 20, 18, 1)).toBe(0);
+  });
+  test('two suppliers each get a fair share', () => {
+    expect(deliveryQuantity(15, 0, 18, 2)).toBe(9);
+    expect(deliveryQuantity(5, 0, 18, 2)).toBe(5);
   });
 });
 

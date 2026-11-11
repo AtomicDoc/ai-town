@@ -30,6 +30,7 @@ import {
   tickJob,
 } from './jobs';
 import { gameHour } from './clock';
+import { SerializedNeeds, serializedNeeds, tickNeeds } from './needs';
 
 /** True if `playerId` belongs to an agent currently working a job shift. */
 function isOnShiftWorker(game: Game, playerId: GameId<'players'>, now: number): boolean {
@@ -49,6 +50,7 @@ export class Agent {
     started: number;
   };
   job?: SerializedJob;
+  needs?: SerializedNeeds;
 
   constructor(serialized: SerializedAgent) {
     const { id, lastConversation, lastInviteAttempt, inProgressOperation } = serialized;
@@ -63,6 +65,7 @@ export class Agent {
     this.lastInviteAttempt = lastInviteAttempt;
     this.inProgressOperation = inProgressOperation;
     this.job = serialized.job && { ...serialized.job };
+    this.needs = serialized.needs && { ...serialized.needs };
   }
 
   tick(game: Game, now: number) {
@@ -101,10 +104,9 @@ export class Agent {
     if (doingActivity && (conversation || player.pathfinding)) {
       player.activity!.until = now;
     }
-    // Scripted job routine (M2). Runs in the engine with no LLM call. Skipped
-    // while in a conversation (conversations take priority). Off shift it only
-    // takes over for deliveries; otherwise tickJob returns false.
-    if (!conversation && this.job) {
+    // Scripted needs and job routines (M2). Run in the engine with no LLM call.
+    // Skipped while in a conversation (conversations take priority).
+    if (!conversation) {
       // On shift, save a finished conversation to memory first. Handle it here
       // rather than falling through to agentDoSomething, which would make the
       // worker wander off and invite someone new mid-shift.
@@ -112,7 +114,12 @@ export class Agent {
         this.startRemembering(game, now);
         return;
       }
-      if (tickJob(game, now, this.job, player)) {
+      // Eating (any time, between tasks) and food shopping (off shift).
+      if (tickNeeds(game, now, this, player, working)) {
+        return;
+      }
+      // Work, plus off-shift deliveries; otherwise tickJob returns false.
+      if (this.job && tickJob(game, now, this.job, player)) {
         return;
       }
     }
@@ -322,6 +329,7 @@ export class Agent {
       lastInviteAttempt: this.lastInviteAttempt,
       inProgressOperation: this.inProgressOperation,
       job: this.job && { ...this.job },
+      needs: this.needs && { ...this.needs },
     };
   }
 }
@@ -340,6 +348,7 @@ export const serializedAgent = {
     }),
   ),
   job: v.optional(v.object(serializedJob)),
+  needs: v.optional(v.object(serializedNeeds)),
 };
 export type SerializedAgent = ObjectType<typeof serializedAgent>;
 
