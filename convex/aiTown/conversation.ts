@@ -11,6 +11,10 @@ import { Game } from './game';
 import { stopPlayer, blocked, movePlayer } from './movement';
 import { ConversationMembership, serializedConversationMembership } from './conversationMembership';
 import { parseMap, serializeMap } from '../util/object';
+import { agentOfPlayer, shareBeliefs } from './relationships';
+
+/** A conversation must have at least this many messages for beliefs to spread. */
+export const MIN_MESSAGES_TO_SHARE_BELIEFS = 2;
 
 export class Conversation {
   id: GameId<'conversations'>;
@@ -192,6 +196,24 @@ export class Conversation {
 
   stop(game: Game, now: number) {
     delete this.isTyping;
+    // Gossip: after a real exchange, each agent passes on what it believes.
+    // (Their prompts included these beliefs as news to bring up.)
+    if (this.numMessages >= MIN_MESSAGES_TO_SHARE_BELIEFS) {
+      const members = [...this.participants.keys()];
+      for (const speakerId of members) {
+        for (const listenerId of members) {
+          if (speakerId === listenerId) continue;
+          const speaker = agentOfPlayer(game, speakerId);
+          const listener = agentOfPlayer(game, listenerId);
+          if (!speaker || !listener) continue;
+          for (const b of shareBeliefs(speaker, speakerId, listener, listenerId)) {
+            console.log(
+              `[belief] ${speakerId} told ${listenerId} that ${b.thief} stole ${b.quantity} ${b.item} from ${b.victim}`,
+            );
+          }
+        }
+      }
+    }
     for (const [playerId, member] of this.participants.entries()) {
       const agent = [...game.world.agents.values()].find((a) => a.playerId === playerId);
       if (agent) {

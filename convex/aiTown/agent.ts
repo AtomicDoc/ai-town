@@ -31,6 +31,7 @@ import {
 } from './jobs';
 import { gameHour } from './clock';
 import { SerializedNeeds, serializedNeeds, tickNeeds } from './needs';
+import { Belief, Opinion, serializedBelief, serializedOpinion } from './relationships';
 
 /** True if `playerId` belongs to an agent currently working a job shift. */
 function isOnShiftWorker(game: Game, playerId: GameId<'players'>, now: number): boolean {
@@ -51,6 +52,8 @@ export class Agent {
   };
   job?: SerializedJob;
   needs?: SerializedNeeds;
+  opinions?: Opinion[];
+  beliefs?: Belief[];
 
   constructor(serialized: SerializedAgent) {
     const { id, lastConversation, lastInviteAttempt, inProgressOperation } = serialized;
@@ -66,6 +69,8 @@ export class Agent {
     this.inProgressOperation = inProgressOperation;
     this.job = serialized.job && { ...serialized.job };
     this.needs = serialized.needs && { ...serialized.needs };
+    this.opinions = serialized.opinions?.map((o) => ({ ...o }));
+    this.beliefs = serialized.beliefs?.map((b) => ({ ...b }));
   }
 
   tick(game: Game, now: number) {
@@ -330,6 +335,8 @@ export class Agent {
       inProgressOperation: this.inProgressOperation,
       job: this.job && { ...this.job },
       needs: this.needs && { ...this.needs },
+      opinions: this.opinions?.length ? this.opinions.map((o) => ({ ...o })) : undefined,
+      beliefs: this.beliefs?.length ? this.beliefs.map((b) => ({ ...b })) : undefined,
     };
   }
 }
@@ -349,6 +356,8 @@ export const serializedAgent = {
   ),
   job: v.optional(v.object(serializedJob)),
   needs: v.optional(v.object(serializedNeeds)),
+  opinions: v.optional(v.array(serializedOpinion)),
+  beliefs: v.optional(v.array(serializedBelief)),
 };
 export type SerializedAgent = ObjectType<typeof serializedAgent>;
 

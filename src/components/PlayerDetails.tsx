@@ -12,6 +12,17 @@ import { ServerGame } from '../hooks/serverGame';
 import { describeInventory } from '../../convex/aiTown/inventory';
 import { JOB_DEFINITIONS, describeShift } from '../../convex/aiTown/jobs';
 import { hungerLevel } from '../../convex/aiTown/needs';
+import { PlayerActionKind } from '../../convex/aiTown/actions';
+import { PRICES } from '../../convex/aiTown/economy';
+import { toast } from 'react-toastify';
+
+const PLAYER_ACTIONS: { action: PlayerActionKind; label: string }[] = [
+  { action: 'buy', label: `Buy bread (🪙${PRICES.bread})` },
+  { action: 'sell', label: 'Sell' },
+  { action: 'steal', label: 'Steal' },
+  { action: 'help', label: 'Help' },
+  { action: 'interfere', label: 'Interfere' },
+];
 
 export default function PlayerDetails({
   worldId,
@@ -54,6 +65,7 @@ export default function PlayerDetails({
     playerId && [...game.world.agents.values()].find((a) => a.playerId === playerId);
 
   const startConversation = useSendInput(engineId, 'startConversation');
+  const playerAction = useSendInput(engineId, 'playerAction');
   const acceptInvite = useSendInput(engineId, 'acceptInvite');
   const rejectInvite = useSendInput(engineId, 'rejectInvite');
   const leaveConversation = useSendInput(engineId, 'leaveConversation');
@@ -132,6 +144,16 @@ export default function PlayerDetails({
       }),
     );
   };
+  const onAction = async (action: PlayerActionKind) => {
+    if (!humanPlayer || !playerId) {
+      return;
+    }
+    const message = await toastOnError(
+      playerAction({ playerId: humanPlayer.id, targetId: playerId, action }),
+    );
+    toast.success(message);
+  };
+  const canAct = !isMe && !!humanPlayer && !!playerAgent && !inConversationWithMe;
   // const pendingSuffix = (inputName: string) =>
   //   [...inflightInputs.values()].find((i) => i.name === inputName) ? ' opacity-50' : '';
 
@@ -165,6 +187,21 @@ export default function PlayerDetails({
             <span>Start conversation</span>
           </div>
         </a>
+      )}
+      {canAct && (
+        <div className="mt-6 grid grid-cols-2 gap-2">
+          {PLAYER_ACTIONS.map(({ action, label }) => (
+            <a
+              key={action}
+              className="button text-white shadow-solid text-base cursor-pointer pointer-events-auto"
+              onClick={() => void onAction(action)}
+            >
+              <div className="h-full bg-clay-700 text-center">
+                <span>{label}</span>
+              </div>
+            </a>
+          ))}
+        </div>
       )}
       {waitingForAccept && (
         <a className="mt-6 button text-white shadow-solid text-xl cursor-pointer pointer-events-auto opacity-50">

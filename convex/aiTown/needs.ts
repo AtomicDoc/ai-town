@@ -21,6 +21,7 @@ import { countItem, removeItem } from './inventory';
 import { PRICES, sellUpTo } from './economy';
 import { JobStep, approach, findWorkers, resolveWorkplace } from './jobs';
 import { movePlayer } from './movement';
+import { noteTrade } from './relationships';
 import type { Game } from './game';
 import type { Player } from './player';
 
@@ -192,6 +193,9 @@ export function tickNeeds(
       const wanted = Math.max(0, SPARE_BREAD - bread);
       const bought = seller ? sellUpTo(seller.player, player, 'bread', wanted, PRICES.bread) : 0;
       needs.lastShopAt = now;
+      if (seller && bought > 0) {
+        noteTrade(game, seller.player.id, player.id);
+      }
       console.log(
         `[econ] ${player.id} bought ${bought}/${wanted} bread from ${seller?.player.id}` +
           ` for ${bought * PRICES.bread} coins (buyer ${player.coins}, shop ${seller?.player.coins})`,
