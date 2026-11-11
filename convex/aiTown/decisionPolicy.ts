@@ -33,6 +33,11 @@ export const eventKind = v.union(
   v.literal('robbed'),
   v.literal('witnessedTheft'),
   v.literal('brokeAndHungry'),
+  // Someone used Help / Interfere on this NPC (direct interactions only).
+  v.literal('helped'),
+  v.literal('interfered'),
+  // Legacy (PR #12): raised when a human walked nearby. No longer raised;
+  // kept so saved worlds still validate. Queued ones are dropped unhandled.
   v.literal('playerApproach'),
 );
 export type EventKind = Infer<typeof eventKind>;
@@ -57,6 +62,7 @@ export const decisionChoice = v.union(
   v.literal('wait'),
   v.literal('greet'),
   v.literal('wave'),
+  v.literal('thank'),
 );
 export type DecisionChoice = Infer<typeof decisionChoice>;
 
@@ -68,8 +74,13 @@ export const EVENT_OPTIONS: Record<
   robbed: { options: ['confront', 'warnOthers', 'avoid', 'ignore'], fallback: 'confront' },
   witnessedTheft: { options: ['confront', 'warnOthers', 'ignore'], fallback: 'warnOthers' },
   brokeAndHungry: { options: ['askForHelp', 'steal', 'wait'], fallback: 'askForHelp' },
+  helped: { options: ['thank', 'wave', 'ignore'], fallback: 'thank' },
+  interfered: { options: ['confront', 'avoid', 'ignore'], fallback: 'confront' },
   playerApproach: { options: ['greet', 'wave', 'ignore'], fallback: 'wave' },
 };
+
+/** Event kinds that are no longer raised; dropped if found in a saved queue. */
+export const LEGACY_EVENT_KINDS: readonly EventKind[] = ['playerApproach'];
 
 /** What each option means, as shown to the LLM. */
 export const CHOICE_DESCRIPTIONS: Record<DecisionChoice, string> = {
@@ -82,6 +93,7 @@ export const CHOICE_DESCRIPTIONS: Record<DecisionChoice, string> = {
   wait: 'go hungry for now and hope things improve',
   greet: 'start a conversation with {subject}',
   wave: 'give {subject} a friendly wave and carry on',
+  thank: 'go and thank {subject}',
 };
 
 // ---------------------------------------------------------------------------
@@ -132,7 +144,9 @@ export function enqueueEvent(agent: EventQueue, event: AgentEvent): boolean {
 
 /** Remove and return the oldest unexpired event, dropping expired ones. */
 export function takeNextEvent(agent: EventQueue, now: number): AgentEvent | undefined {
-  const fresh = (agent.pendingEvents ?? []).filter((e) => now - e.at < EVENT_TTL);
+  const fresh = (agent.pendingEvents ?? []).filter(
+    (e) => now - e.at < EVENT_TTL && !LEGACY_EVENT_KINDS.includes(e.kind),
+  );
   const next = fresh.shift();
   agent.pendingEvents = fresh.length ? fresh : undefined;
   return next;
@@ -154,6 +168,10 @@ export function describeEvent(event: AgentEvent, nameOf: (id: string) => string)
       }.`;
     case 'brokeAndHungry':
       return `You are hungry, you have no bread left, and you can't afford to buy any.`;
+    case 'helped':
+      return `${subject} just pitched in and helped you finish your work.`;
+    case 'interfered':
+      return `${subject} just got in the way of your work and spoiled it.`;
     case 'playerApproach':
       return `${subject} just walked up to you.`;
   }
