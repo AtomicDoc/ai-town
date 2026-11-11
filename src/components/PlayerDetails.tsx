@@ -9,6 +9,7 @@ import { useSendInput } from '../hooks/sendInput';
 import { Player } from '../../convex/aiTown/player';
 import { GameId } from '../../convex/aiTown/ids';
 import { ServerGame } from '../hooks/serverGame';
+import { describeInventory } from '../../convex/aiTown/inventory';
 
 export default function PlayerDetails({
   worldId,
@@ -218,6 +219,13 @@ export default function PlayerDetails({
         <div className="box flex-grow mt-6">
           <h2 className="bg-brown-700 text-base sm:text-lg text-center">
             {player.activity.description}
+          </h2>
+        </div>
+      )}
+      {Object.keys(player.inventory).length > 0 && (
+        <div className="box flex-grow mt-6">
+          <h2 className="bg-brown-700 text-base sm:text-lg text-center">
+            Carrying: {describeInventory(player.inventory)}
           </h2>
         </div>
       )}
