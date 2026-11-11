@@ -7,7 +7,9 @@ import {
   decideJobStep,
   findOpenTile,
   isJobKind,
+  isOnShift,
   newJob,
+  shouldAcceptInviteWhileWorking,
 } from './jobs';
 
 const farmer = JOB_DEFINITIONS.farmer;
@@ -83,6 +85,26 @@ describe('decideJobStep', () => {
     const near = { x: workplace.x + WORKPLACE_ARRIVAL_DISTANCE, y: workplace.y };
     const step = decideJobStep(newJob('farmer'), farmer, workplace, snapshot({ position: near }));
     expect(step).toEqual({ kind: 'startTask', until: NOW + farmer.task.duration });
+  });
+
+  test('pathfinder swapped the destination for a nearby tile: still walking', () => {
+    const step = decideJobStep(
+      newJob('farmer'),
+      farmer,
+      workplace,
+      snapshot({ position: { x: 5, y: 5 }, pathfindingDestination: { x: 57, y: 40 } }),
+    );
+    expect(step).toEqual({ kind: 'walking' });
+  });
+
+  test('close enough but still moving: finish the walk before starting a task', () => {
+    const step = decideJobStep(
+      newJob('farmer'),
+      farmer,
+      workplace,
+      snapshot({ position: { x: 55, y: 40 }, pathfindingDestination: workplace }),
+    );
+    expect(step).toEqual({ kind: 'walking' });
   });
 
   test('task in progress with intact activity: keep working', () => {
@@ -180,6 +202,22 @@ describe('findOpenTile', () => {
         { x: 0, y: 0 },
       ),
     ).toBeUndefined();
+  });
+});
+
+describe('shift rules', () => {
+  test('isOnShift follows the shift window', () => {
+    expect(isOnShift(newJob('farmer'), ON_SHIFT)).toBe(true);
+    expect(isOnShift(newJob('farmer'), OFF_SHIFT)).toBe(false);
+  });
+
+  test('isOnShift stays true while a task is finishing after the shift ends', () => {
+    expect(isOnShift(workingJob(NOW + 1_000), OFF_SHIFT)).toBe(true);
+  });
+
+  test('on-shift workers accept humans but decline agents', () => {
+    expect(shouldAcceptInviteWhileWorking(true)).toBe(true);
+    expect(shouldAcceptInviteWhileWorking(false)).toBe(false);
   });
 });
 
