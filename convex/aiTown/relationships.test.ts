@@ -244,12 +244,18 @@ describe('player actions (fake world)', () => {
     expect(job.taskEndsAt).toBe(100);
     expect(alice.activity.until).toBe(100);
     expect(getOpinion(agents.get('a:2')!, 'p:1')).toBe(OPINION_DELTAS.helped);
+    expect((agents.get('a:2') as any).pendingEvents).toEqual([
+      expect.objectContaining({ kind: 'helped', subject: 'p:1' }),
+    ]);
 
     job.taskEndsAt = 9000;
     alice.activity = { description: 'baking', until: 9000 };
     performPlayerAction(game, 200, me as any, alice as any, 'interfere');
     expect(alice.activity.until).toBe(200);
     expect(job.taskEndsAt).toBe(9000); // job sees the mismatch and abandons the task
+    expect((agents.get('a:2') as any).pendingEvents).toContainEqual(
+      expect.objectContaining({ kind: 'interfered', subject: 'p:1' }),
+    );
     // Alice's spoiled task is no longer intact, so there's nothing to help with.
     expect(() => performPlayerAction(game, 300, me as any, alice as any, 'help')).toThrow(
       "isn't in the middle",

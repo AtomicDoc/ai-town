@@ -101,7 +101,59 @@ describe('processEvents (traditional policy)', () => {
   });
 });
 
+describe('idle activity intent (config C)', () => {
+  test('walks to the place, then does the activity and remembers it', () => {
+    const { game, players, agents } = fakeWorld();
+    const alice = players.get('p:2')!;
+    const aliceAgent = agents.get('a:2');
+    aliceAgent.intent = {
+      kind: 'activity',
+      destination: { x: 8, y: 15 },
+      place: 'the west grove',
+      description: 'reading a book under a tree',
+      emoji: '📖',
+      until: 100_000,
+    };
+    expect(tickIntent(game, 1000, aliceAgent, alice as any)).toBe(true);
+    expect(alice.pathfinding?.destination).toEqual({ x: 8, y: 15 });
+
+    delete alice.pathfinding;
+    alice.position = { x: 8, y: 15 };
+    expect(tickIntent(game, 2000, aliceAgent, alice as any)).toBe(true);
+    expect(alice.activity).toMatchObject({
+      description: 'reading a book under a tree',
+      emoji: '📖',
+    });
+    expect(aliceAgent.intent).toBeUndefined();
+    expect(aliceAgent.recentActions).toEqual([
+      { at: 2000, description: 'reading a book under a tree', place: 'the west grove' },
+    ]);
+  });
+
+  test('an expired plan is dropped', () => {
+    const { game, players, agents } = fakeWorld();
+    const aliceAgent = agents.get('a:2');
+    aliceAgent.intent = {
+      kind: 'activity',
+      destination: { x: 8, y: 15 },
+      place: 'the west grove',
+      description: 'x',
+      emoji: '📖',
+      until: 10,
+    };
+    expect(tickIntent(game, 1000, aliceAgent, players.get('p:2') as any)).toBe(false);
+    expect(aliceAgent.intent).toBeUndefined();
+  });
+});
+
 describe('applyDecision', () => {
+  test('notable choices are remembered as recent actions', () => {
+    const { game, players, agents } = fakeWorld();
+    const aliceAgent = agents.get('a:2');
+    applyDecision(game, 100, aliceAgent, players.get('p:2') as any, robbed, 'confront');
+    expect(aliceAgent.recentActions?.[0].description).toBe('confronted Traveler');
+  });
+
   test('avoid walks away from the subject', () => {
     const { game, players, agents } = fakeWorld();
     const alice = players.get('p:2')!;

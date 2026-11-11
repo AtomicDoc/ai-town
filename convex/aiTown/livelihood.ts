@@ -11,8 +11,9 @@ import { JOB_DEFINITIONS, SerializedJob, describeShift, isOnShift } from './jobs
 import { ITEM_INFO, ITEM_KINDS, countItem, parseInventory } from './inventory';
 import { parseCoins } from './economy';
 import { SerializedNeeds, describeHunger, hungerLevel } from './needs';
+import { RecentAction, recentActionsPrompt } from './idle';
 
-type AgentState = { job?: SerializedJob; needs?: SerializedNeeds };
+type AgentState = { job?: SerializedJob; needs?: SerializedNeeds; recentActions?: RecentAction[] };
 type PlayerState = {
   name: string;
   inventory?: Record<string, number>;
@@ -77,6 +78,11 @@ export function livelihoodPrompts(
   const hunger = describeHunger(hungerLevel(agent?.needs?.lastAteAt, now));
   if (hunger) {
     lines.push(`You are ${hunger}.`);
+  }
+
+  const recent = agent ? recentActionsPrompt(agent) : undefined;
+  if (recent) {
+    lines.push(recent);
   }
 
   const otherRole = describeRole(otherPlayer.name, otherAgent);

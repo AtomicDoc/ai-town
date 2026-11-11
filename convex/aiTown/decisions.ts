@@ -8,19 +8,20 @@
 import { Infer, v } from 'convex/values';
 import { GAME_DAY_LENGTH } from '../constants';
 import { distance } from '../util/geometry';
+import { point } from '../util/types';
 import type { Point } from '../util/types';
 import { GameId, playerId } from './ids';
 import { Conversation } from './conversation';
 import { movePlayer } from './movement';
 import { countItem } from './inventory';
-import { findOpenTile, findWorkers, resolveWorkplace } from './jobs';
+import { approach, findOpenTile, findWorkers, resolveWorkplace } from './jobs';
+import { IDLE_ACTIVITY_DURATION, nearestPlace, recordAction } from './idle';
 import { INTERACT_DISTANCE, performPlayerAction } from './actions';
 import {
   AgentEvent,
   DecisionChoice,
   EVENT_OPTIONS,
   decide,
-  enqueueEvent,
   policyMode,
   takeNextEvent,
 } from './decisionPolicy';
@@ -28,22 +29,31 @@ import type { Game } from './game';
 import type { Player } from './player';
 import type { Agent } from './agent';
 
-/** A human within this many tiles counts as approaching. */
-export const APPROACH_RADIUS = 3;
-/** Don't react to the same human approaching more often than this. */
-export const APPROACH_COOLDOWN = GAME_DAY_LENGTH / 8;
 /** A multi-step plan (e.g. steal) is abandoned after this long. */
 export const INTENT_TIMEOUT = GAME_DAY_LENGTH / 12;
 /** Shown while an LLM decision is pending. */
 export const THINKING_ACTIVITY = { description: 'thinking', emoji: '💭' };
 
-export const serializedIntent = v.object({
-  kind: v.literal('steal'),
-  targetId: playerId,
-  until: v.number(),
-});
+export const serializedIntent = v.union(
+  // Walk to a stall (or its owner) and take a loaf.
+  v.object({
+    kind: v.literal('steal'),
+    targetId: playerId,
+    until: v.number(),
+  }),
+  // Walk to a place and do a (purely cosmetic) activity there (config C idle plan).
+  v.object({
+    kind: v.literal('activity'),
+    destination: point,
+    place: v.string(),
+    description: v.string(),
+    emoji: v.string(),
+    until: v.number(),
+  }),
+);
 export type Intent = Infer<typeof serializedIntent>;
 
+// Legacy (PR #12 walk-by detection, removed): kept so saved agents still validate.
 export const serializedApproachSeen = v.object({ playerId, at: v.number() });
 export type ApproachSeen = Infer<typeof serializedApproachSeen>;
 
@@ -63,25 +73,9 @@ export function logRoutine(game: Game, now: number, player: Player, step: string
   });
 }
 
-// ---------------------------------------------------------------------------
-// Event detection
-// ---------------------------------------------------------------------------
-
-/** Queue a playerApproach event when a human comes close (with a cooldown). */
-export function detectPlayerApproach(game: Game, now: number, agent: Agent, player: Player) {
-  for (const other of game.world.players.values()) {
-    if (!other.human || other.id === player.id) continue;
-    if (distance(other.position, player.position) > APPROACH_RADIUS) continue;
-    if (game.world.playerConversation(other)) continue;
-    const seen = agent.approachSeen?.find((s) => s.playerId === other.id);
-    if (seen && now - seen.at < APPROACH_COOLDOWN) continue;
-    agent.approachSeen = [
-      ...(agent.approachSeen ?? []).filter((s) => s.playerId !== other.id),
-      { playerId: other.id, at: now },
-    ];
-    enqueueEvent(agent, { kind: 'playerApproach', at: now, subject: other.id });
-  }
-}
+// NPCs react only to direct interactions: being robbed, helped, or interfered
+// with (raised in relationships.recordTheft and actions.ts), plus seeing a
+// theft and being broke and hungry. Walking nearby triggers nothing.
 
 // ---------------------------------------------------------------------------
 // Event processing
@@ -154,6 +148,10 @@ export function finishLlmDecision(
 // Carrying out choices
 // ---------------------------------------------------------------------------
 
+function nameOf(game: Game, id: string): string {
+  return game.playerDescriptions.get(id as GameId<'players'>)?.name ?? 'someone';
+}
+
 function inConversation(game: Game, p: Player): boolean {
   return !!game.world.playerConversation(p);
 }
@@ -208,6 +206,7 @@ export function applyDecision(
   switch (choice) {
     case 'confront':
     case 'greet':
+    case 'thank':
       note = startTalking(game, now, player, subject || undefined);
       break;
     case 'warnOthers':
@@ -247,6 +246,19 @@ export function applyDecision(
       break;
   }
   console.log(`[decision] ${player.id} ${event.kind} -> ${choice}: ${note}`);
+  // Remember notable choices so the NPC can talk about them later.
+  const who = event.subject ? nameOf(game, event.subject) : 'them';
+  const remembered: Partial<Record<DecisionChoice, string>> = {
+    confront: `confronted ${who}`,
+    warnOthers: `went to warn others about ${who}`,
+    avoid: `kept away from ${who}`,
+    askForHelp: 'asked around for help getting food',
+    thank: `went to thank ${who}`,
+    greet: `went to talk with ${who}`,
+  };
+  if (remembered[choice]) {
+    recordAction(agent, now, remembered[choice]!, nearestPlace(player.position).name);
+  }
   return note;
 }
 
@@ -270,6 +282,29 @@ export function tickIntent(game: Game, now: number, agent: Agent, player: Player
   const intent = agent.intent;
   if (!intent) {
     return false;
+  }
+  if (intent.kind === 'activity') {
+    if (now > intent.until) {
+      delete agent.intent;
+      return false;
+    }
+    const step = approach(
+      { position: player.position, pathfindingDestination: player.pathfinding?.destination },
+      intent.destination,
+      (destination) => ({ kind: 'walkToWork', destination }),
+    );
+    if (step === 'arrived') {
+      player.activity = {
+        description: intent.description,
+        emoji: intent.emoji,
+        until: now + IDLE_ACTIVITY_DURATION,
+      };
+      recordAction(agent, now, intent.description, intent.place);
+      delete agent.intent;
+    } else if (step.kind === 'walkToWork') {
+      movePlayer(game, now, player, step.destination);
+    }
+    return true;
   }
   const target = game.world.players.get(intent.targetId as GameId<'players'>);
   const targetAgent = [...game.world.agents.values()].find((a) => a.playerId === intent.targetId);
@@ -296,6 +331,12 @@ export function tickIntent(game: Game, now: number, agent: Agent, player: Player
   try {
     const message = performPlayerAction(game, now, player, target, 'steal', 'bread');
     console.log(`[decision] ${player.id} carried out steal: ${message}`);
+    recordAction(
+      agent,
+      now,
+      `stole a loaf of bread from ${nameOf(game, target.id)}`,
+      nearestPlace(player.position).name,
+    );
   } catch (e: any) {
     console.log(`[decision] ${player.id} couldn't steal: ${e.message}`);
   }

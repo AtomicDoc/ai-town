@@ -70,6 +70,31 @@ describe('event queue', () => {
     expect(agent.pendingEvents).toHaveLength(MAX_PENDING_EVENTS);
   });
 
+  test('drops legacy playerApproach events from saved queues', () => {
+    const agent: { pendingEvents?: AgentEvent[] } = {
+      pendingEvents: [
+        { kind: 'playerApproach', at: 100, subject: 'p:1' as any },
+        { ...robbed, at: 200 },
+      ],
+    };
+    expect(takeNextEvent(agent, 300)).toEqual({ ...robbed, at: 200 });
+    expect(takeNextEvent(agent, 300)).toBeUndefined();
+  });
+
+  test('helped and interfered have direct-interaction menus', () => {
+    expect(decide({ kind: 'helped', at: 0 }, 'traditional')).toEqual({
+      mode: 'scripted',
+      choice: 'thank',
+    });
+    expect(decide({ kind: 'interfered', at: 0 }, 'hybrid')).toEqual({
+      mode: 'llm',
+      options: ['confront', 'avoid', 'ignore'],
+    });
+    expect(describeEvent({ kind: 'helped', at: 0, subject: 'p:1' as any }, nameOf)).toBe(
+      'Traveler just pitched in and helped you finish your work.',
+    );
+  });
+
   test('takes oldest first and drops expired events', () => {
     const agent: { pendingEvents?: AgentEvent[] } = {
       pendingEvents: [
