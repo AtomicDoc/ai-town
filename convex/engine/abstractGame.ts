@@ -130,6 +130,19 @@ export async function loadEngine(
   return engine;
 }
 
+/**
+ * Number for a newly inserted input. It must be greater than both the latest
+ * stored input and the engine's processedInputNumber: the daily vacuum cron
+ * deletes old inputs, and if numbering restarted below processedInputNumber the
+ * engine (which only loads inputs numbered above it) would never see them.
+ */
+export function nextInputNumber(
+  latestInputNumber: number | undefined,
+  processedInputNumber: number | undefined,
+): number {
+  return Math.max(latestInputNumber ?? -1, processedInputNumber ?? -1) + 1;
+}
+
 export async function engineInsertInput(
   ctx: MutationCtx,
   engineId: Id<'engines'>,
@@ -142,7 +155,8 @@ export async function engineInsertInput(
     .withIndex('byInputNumber', (q) => q.eq('engineId', engineId))
     .order('desc')
     .first();
-  const number = prevInput ? prevInput.number + 1 : 0;
+  const engine = await ctx.db.get(engineId);
+  const number = nextInputNumber(prevInput?.number, engine?.processedInputNumber);
   const inputId = await ctx.db.insert('inputs', {
     engineId,
     number,
