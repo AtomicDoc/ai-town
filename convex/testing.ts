@@ -24,6 +24,7 @@ import { parseCoins } from './aiTown/economy';
 import { hungerLevel } from './aiTown/needs';
 import { playerActionKind } from './aiTown/actions';
 import { describeBelief } from './aiTown/relationships';
+import { eventKind } from './aiTown/decisionPolicy';
 
 // Clear all of the tables except for the embeddings cache.
 const excludedTables: Array<TableNames> = ['embeddingsCache'];
@@ -241,6 +242,43 @@ export const act = internalMutation({
       targetId: find(args.target),
       action: args.action,
       item: args.item,
+    });
+  },
+});
+
+// Queue an unusual event on an NPC to exercise the decision policy (M3).
+//   npx convex run testing:event '{"name":"Alice","kind":"robbed","subject":"Stella","item":"bread"}'
+//   npx convex run testing:event '{"name":"Pete","kind":"brokeAndHungry"}'
+export const event = internalMutation({
+  args: {
+    name: v.string(),
+    kind: eventKind,
+    subject: v.optional(v.string()),
+    victim: v.optional(v.string()),
+    item: v.optional(itemKind),
+  },
+  handler: async (ctx, args) => {
+    const { worldStatus } = await getDefaultWorld(ctx.db);
+    const world = await ctx.db.get(worldStatus.worldId);
+    const active = new Set(world?.players.map((p) => p.id));
+    const descriptions = await ctx.db
+      .query('playerDescriptions')
+      .withIndex('worldId', (q) => q.eq('worldId', worldStatus.worldId))
+      .collect();
+    const find = (name: string) => {
+      const d = descriptions.find((d) => d.name === name && active.has(d.playerId));
+      if (!d) throw new Error(`No active player named ${name}`);
+      return d.playerId;
+    };
+    return await insertInput(ctx, worldStatus.worldId, 'debugEvent', {
+      playerId: find(args.name),
+      event: {
+        kind: args.kind,
+        at: Date.now(),
+        subject: args.subject ? find(args.subject) : undefined,
+        victim: args.victim ? find(args.victim) : undefined,
+        item: args.item,
+      },
     });
   },
 });

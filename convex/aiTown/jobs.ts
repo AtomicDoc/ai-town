@@ -31,6 +31,7 @@ import { movePlayer } from './movement';
 import { ItemKind, addItem, countItem, removeItem } from './inventory';
 import { WHOLESALE_PRICES, sellUpTo } from './economy';
 import { noteTrade } from './relationships';
+import { logRoutine } from './decisions';
 import type { Game } from './game';
 import type { Player } from './player';
 
@@ -509,6 +510,7 @@ export function tickJob(game: Game, now: number, job: SerializedJob, player: Pla
         player.activity.until = now;
       }
       movePlayer(game, now, player, step.destination);
+      logRoutine(game, now, player, step.kind);
       return true;
     case 'deliver': {
       const item = def.delivery!.item;
@@ -528,6 +530,7 @@ export function tickJob(game: Game, now: number, job: SerializedJob, player: Pla
         }
       }
       job.lastDeliveryAt = now;
+      logRoutine(game, now, player, 'deliver');
       console.log(
         `[econ] ${player.id} (${def.title}) sold ${sold}/${held} ${item}` +
           ` to ${recipient?.player.id} for ${sold * WHOLESALE_PRICES[item]} coins` +
@@ -545,6 +548,7 @@ export function tickJob(game: Game, now: number, job: SerializedJob, player: Pla
         noteTrade(game, supplier.player.id, player.id);
       }
       job.lastRestockAt = now;
+      logRoutine(game, now, player, 'restock');
       console.log(
         `[econ] ${player.id} (${def.title}) restocked ${bought}/${wanted} ${item}` +
           ` from ${supplier?.player.id} for ${bought * WHOLESALE_PRICES[item]} coins` +
@@ -564,6 +568,7 @@ export function tickJob(game: Game, now: number, job: SerializedJob, player: Pla
         until: step.until,
       };
       job.taskEndsAt = step.until;
+      logRoutine(game, now, player, 'startTask');
       return true;
     case 'completeTask': {
       delete job.taskEndsAt;

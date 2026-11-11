@@ -22,6 +22,8 @@ import { PRICES, sellUpTo } from './economy';
 import { JobStep, approach, findWorkers, resolveWorkplace } from './jobs';
 import { movePlayer } from './movement';
 import { noteTrade } from './relationships';
+import { AgentEvent, enqueueEvent } from './decisionPolicy';
+import { logRoutine } from './decisions';
 import type { Game } from './game';
 import type { Player } from './player';
 
@@ -42,7 +44,28 @@ export const EATING_ACTIVITY = { description: 'eating', emoji: '🍞' };
 export const serializedNeeds = {
   lastAteAt: v.number(),
   lastShopAt: v.optional(v.number()),
+  /** When the last brokeAndHungry event was raised (M3). */
+  lastBrokeEventAt: v.optional(v.number()),
 };
+
+/** Minimum time between brokeAndHungry events for one agent. */
+export const BROKE_EVENT_COOLDOWN = GAME_DAY_LENGTH / 4;
+
+/** Hungry, no bread, and can't afford any: an unusual situation for the policy. */
+export function brokeAndHungryDue(
+  needs: SerializedNeeds,
+  hunger: number,
+  bread: number,
+  coins: number,
+  now: number,
+): boolean {
+  return (
+    hunger >= EAT_AT &&
+    bread === 0 &&
+    coins < PRICES.bread &&
+    (needs.lastBrokeEventAt === undefined || now - needs.lastBrokeEventAt >= BROKE_EVENT_COOLDOWN)
+  );
+}
 export type SerializedNeeds = ObjectType<typeof serializedNeeds>;
 
 /** Hunger 0-100 from the time since the last meal. */
@@ -133,7 +156,11 @@ export function shoppingDue(
 export function tickNeeds(
   game: Game,
   now: number,
-  agent: { needs?: SerializedNeeds; job?: { taskEndsAt?: number } },
+  agent: {
+    needs?: SerializedNeeds;
+    job?: { taskEndsAt?: number };
+    pendingEvents?: AgentEvent[];
+  },
   player: Player,
   working: boolean,
 ): boolean {
@@ -144,6 +171,12 @@ export function tickNeeds(
   const needs = agent.needs;
   const hunger = hungerLevel(needs.lastAteAt, now);
   const bread = countItem(player.inventory, 'bread');
+
+  // Unusual situation for the decision policy (M3); handled next tick.
+  if (brokeAndHungryDue(needs, hunger, bread, player.coins, now)) {
+    needs.lastBrokeEventAt = now;
+    enqueueEvent(agent, { kind: 'brokeAndHungry', at: now });
+  }
 
   let seller: ReturnType<typeof findWorkers>[number] | undefined;
   let shop: NeedsSnapshot['shop'];
@@ -182,12 +215,14 @@ export function tickNeeds(
       needs.lastAteAt = now;
       player.activity = { ...EATING_ACTIVITY, until: now + EAT_DURATION };
       console.log(`[needs] ${player.id} ate bread (hunger was ${hunger})`);
+      logRoutine(game, now, player, 'eat');
       return true;
     case 'walkToWork':
       if (player.activity && player.activity.until > now) {
         player.activity.until = now;
       }
       movePlayer(game, now, player, step.destination);
+      logRoutine(game, now, player, 'goShopping');
       return true;
     case 'buy': {
       const wanted = Math.max(0, SPARE_BREAD - bread);
@@ -200,6 +235,7 @@ export function tickNeeds(
         `[econ] ${player.id} bought ${bought}/${wanted} bread from ${seller?.player.id}` +
           ` for ${bought * PRICES.bread} coins (buyer ${player.coins}, shop ${seller?.player.coins})`,
       );
+      logRoutine(game, now, player, 'buy');
       return true;
     }
   }

@@ -43,11 +43,97 @@ export const llmCallFields = {
 const llmCallValidator = v.object(llmCallFields);
 export type LlmCallRow = Infer<typeof llmCallValidator>;
 
+/**
+ * One row per agent decision (M3/M4). `trigger` is either a routine step
+ * ('routine.startTask', 'routine.deliver', 'routine.eat', ...) or an unusual
+ * event ('event.robbed', 'event.witnessedTheft', ...). `mode` says who decided.
+ */
+export const decisionFields = {
+  at: v.number(),
+  playerId: v.string(),
+  trigger: v.string(),
+  mode: v.union(v.literal('scripted'), v.literal('llm'), v.literal('llm-fallback')),
+  choice: v.string(),
+  options: v.optional(v.array(v.string())),
+  /** LLM decision latency (ms), from request to reply. */
+  latencyMs: v.optional(v.number()),
+  /** Policy mode in force: 'hybrid' | 'traditional' | 'llm-heavy'. */
+  policy: v.string(),
+  experiment: v.optional(v.string()),
+  runId: v.optional(v.string()),
+};
+export const decisionValidator = v.object(decisionFields);
+export type DecisionRow = Infer<typeof decisionValidator>;
+
 export const metricsTables = {
   llmCalls: defineTable(llmCallFields)
     .index('startedAt', ['startedAt'])
     .index('runId', ['runId', 'startedAt']),
+  decisions: defineTable(decisionFields).index('at', ['at']).index('runId', ['runId', 'at']),
 };
+
+export type DecisionSummary = {
+  trigger: string;
+  total: number;
+  scripted: number;
+  llm: number;
+  llmFallback: number;
+  choices: Record<string, number>;
+};
+
+/** Counts per trigger and mode, plus the share of decisions that used the LLM. */
+export function summarizeDecisions(rows: Pick<DecisionRow, 'trigger' | 'mode' | 'choice'>[]): {
+  total: number;
+  llm: number;
+  llmShare: number;
+  byTrigger: DecisionSummary[];
+} {
+  const groups = new Map<string, DecisionSummary>();
+  for (const row of rows) {
+    let g = groups.get(row.trigger);
+    if (!g) {
+      g = { trigger: row.trigger, total: 0, scripted: 0, llm: 0, llmFallback: 0, choices: {} };
+      groups.set(row.trigger, g);
+    }
+    g.total++;
+    if (row.mode === 'scripted') g.scripted++;
+    else if (row.mode === 'llm') g.llm++;
+    else g.llmFallback++;
+    g.choices[row.choice] = (g.choices[row.choice] ?? 0) + 1;
+  }
+  const byTrigger = [...groups.values()].sort((a, b) => b.total - a.total);
+  const llm = byTrigger.reduce((a, g) => a + g.llm + g.llmFallback, 0);
+  return {
+    total: rows.length,
+    llm,
+    llmShare: rows.length ? Math.round((llm / rows.length) * 1000) / 1000 : 0,
+    byTrigger,
+  };
+}
+
+// npx convex run metrics:decisionSummary '{"sinceMinutes": 30}'
+export const decisionSummary = internalQuery({
+  args: {
+    sinceMinutes: v.optional(v.number()),
+    runId: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const since = Date.now() - (args.sinceMinutes ?? 60) * 60_000;
+    const rows = args.runId
+      ? await ctx.db
+          .query('decisions')
+          .withIndex('runId', (q) => q.eq('runId', args.runId))
+          .collect()
+      : await ctx.db
+          .query('decisions')
+          .withIndex('at', (q) => q.gte('at', since))
+          .collect();
+    return {
+      window: args.runId ? `runId ${args.runId}` : `last ${args.sinceMinutes ?? 60} min`,
+      ...summarizeDecisions(rows),
+    };
+  },
+});
 
 export const recordLlmCall = internalMutation({
   args: llmCallFields,

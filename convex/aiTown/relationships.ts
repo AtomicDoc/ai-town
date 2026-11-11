@@ -19,6 +19,7 @@ import { Infer, v } from 'convex/values';
 import { GameId, playerId } from './ids';
 import { ItemKind, itemKind } from './inventory';
 import { distance } from '../util/geometry';
+import { enqueueEvent } from './decisionPolicy';
 import type { Game } from './game';
 import type { Agent } from './agent';
 import type { Point } from '../util/types';
@@ -328,15 +329,19 @@ export function recordTheft(
   // The victim always knows they were robbed, and by whom, even if they were
   // away from their stall (a deliberate simplification for the study).
   const victim = agentOfPlayer(game, victimId);
+  const event = { at: now, subject: belief.thief, victim: belief.victim, item };
   if (victim) {
     addBelief(victim, belief);
     adjustOpinion(victim, thiefId, OPINION_DELTAS.stolenFrom);
+    // Unusual event for the decision policy (M3).
+    enqueueEvent(victim, { kind: 'robbed', ...event });
   }
   // Bystanders within sight form first-hand beliefs too.
   const witnesses: string[] = [];
   for (const agent of witnessesAt(game, thief.position, [thiefId, victimId])) {
     addBelief(agent, belief);
     adjustOpinion(agent, thiefId, OPINION_DELTAS.witnessedTheft);
+    enqueueEvent(agent, { kind: 'witnessedTheft', ...event });
     witnesses.push(agent.playerId);
   }
   return { witnesses, victimKnows: !!victim };

@@ -2,6 +2,8 @@ import { v } from 'convex/values';
 import { agentId, conversationId, parseGameId, playerId } from './ids';
 import { addItem, itemKind, removeItem } from './inventory';
 import { gossipFromLine } from './relationships';
+import { decisionChoice, enqueueEvent, serializedEvent } from './decisionPolicy';
+import { finishLlmDecision, logRoutine } from './decisions';
 import { Player, activity } from './player';
 import { Conversation, conversationInputs } from './conversation';
 import { movePlayer } from './movement';
@@ -90,6 +92,10 @@ export const agentInputs = {
       if (args.activity) {
         player.activity = args.activity;
       }
+      // Stock AI Town idle behavior is a routine scripted decision too.
+      if (args.invitee) logRoutine(game, now, player, 'invite');
+      if (args.destination) logRoutine(game, now, player, 'wander');
+      if (args.activity) logRoutine(game, now, player, 'idleActivity');
       return null;
     },
   }),
@@ -145,6 +151,56 @@ export const agentInputs = {
         conversation.leave(game, now, player);
       }
       return null;
+    },
+  }),
+  // M3: the LLM's (or fallback) choice for an unusual event comes back here.
+  finishDecision: inputHandler({
+    args: {
+      agentId,
+      operationId: v.string(),
+      event: serializedEvent,
+      choice: decisionChoice,
+      mode: v.union(v.literal('llm'), v.literal('llm-fallback')),
+      options: v.array(decisionChoice),
+      latencyMs: v.number(),
+    },
+    handler: (game, now, args) => {
+      const agent = game.world.agents.get(parseGameId('agents', args.agentId));
+      if (!agent) {
+        throw new Error(`Couldn't find agent: ${args.agentId}`);
+      }
+      if (agent.inProgressOperation?.operationId !== args.operationId) {
+        console.debug(`Agent ${args.agentId} wasn't deciding ${args.operationId}`);
+        return null;
+      }
+      delete agent.inProgressOperation;
+      const player = game.world.players.get(agent.playerId);
+      if (!player) {
+        throw new Error(`Couldn't find player: ${agent.playerId}`);
+      }
+      finishLlmDecision(
+        game,
+        now,
+        agent,
+        player,
+        args.event,
+        args.choice,
+        args.mode,
+        args.options,
+        args.latencyMs,
+      );
+      return null;
+    },
+  }),
+  // Testing helper: queue an unusual event on an agent (see testing:event).
+  debugEvent: inputHandler({
+    args: { playerId, event: serializedEvent },
+    handler: (game, now, args) => {
+      const agent = [...game.world.agents.values()].find((a) => a.playerId === args.playerId);
+      if (!agent) {
+        throw new Error(`No agent for ${args.playerId}`);
+      }
+      return enqueueEvent(agent, { ...args.event, at: now });
     },
   }),
   // Testing helper: adjust a player's items and/or coins (negative = take).

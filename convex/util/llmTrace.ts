@@ -15,6 +15,8 @@ export type LlmPurpose =
   | 'memory.reflection'
   | 'embedding.memory'
   | 'embedding.query'
+  // M3: one short multiple-choice call per unusual event, e.g. 'decision.robbed'.
+  | `decision.${string}`
   | 'test';
 
 export function llmTrace(ctx: ActionCtx, purpose: LlmPurpose, playerId?: string): LlmTrace {

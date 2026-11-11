@@ -1,5 +1,18 @@
 import { v } from 'convex/values';
-import { internalAction } from '../_generated/server';
+import { internalAction, internalQuery } from '../_generated/server';
+import {
+  DecisionChoice,
+  EVENT_OPTIONS,
+  decisionChoice,
+  decisionPrompt,
+  describeEvent,
+  parseChoice,
+  serializedEvent,
+} from './decisionPolicy';
+import { chatCompletion } from '../util/llm';
+import { llmTrace } from '../util/llmTrace';
+import { livelihoodPrompts } from './livelihood';
+import { socialPrompts } from './relationships';
 import { WorldMap, serializedWorldMap } from './worldMap';
 import { rememberConversation } from '../agent/memory';
 import { GameId, agentId, conversationId, playerId } from './ids';
@@ -164,6 +177,108 @@ export const agentDoSomething = internalAction({
         operationId: args.operationId,
         agentId: args.agent.id,
         invitee,
+      },
+    });
+  },
+});
+
+// ---------------------------------------------------------------------------
+// M3: LLM decisions for unusual events (see decisionPolicy.ts)
+// ---------------------------------------------------------------------------
+
+export const decisionPromptData = internalQuery({
+  args: {
+    worldId: v.id('worlds'),
+    playerId,
+  },
+  handler: async (ctx, args) => {
+    const world = await ctx.db.get(args.worldId);
+    if (!world) {
+      throw new Error(`World ${args.worldId} not found`);
+    }
+    const player = world.players.find((p) => p.id === args.playerId);
+    const agent = world.agents.find((a) => a.playerId === args.playerId);
+    if (!player || !agent) {
+      throw new Error(`Agent for ${args.playerId} not found`);
+    }
+    const agentDescription = await ctx.db
+      .query('agentDescriptions')
+      .withIndex('worldId', (q) => q.eq('worldId', args.worldId).eq('agentId', agent.id))
+      .first();
+    const descriptions = await ctx.db
+      .query('playerDescriptions')
+      .withIndex('worldId', (q) => q.eq('worldId', args.worldId))
+      .collect();
+    return {
+      player,
+      agent,
+      identity: agentDescription?.identity ?? '',
+      names: descriptions.map((d) => ({ playerId: d.playerId, name: d.name })),
+    };
+  },
+});
+
+export const agentDecide = internalAction({
+  args: {
+    worldId: v.id('worlds'),
+    playerId,
+    agentId,
+    operationId: v.string(),
+    event: serializedEvent,
+    options: v.array(decisionChoice),
+  },
+  handler: async (ctx, args) => {
+    const started = Date.now();
+    let choice: DecisionChoice | undefined;
+    try {
+      const data = await ctx.runQuery(internal.aiTown.agentOperations.decisionPromptData, {
+        worldId: args.worldId,
+        playerId: args.playerId,
+      });
+      const nameOf = (id: string) => data.names.find((n) => n.playerId === id)?.name ?? 'someone';
+      const name = nameOf(args.playerId);
+      const subjectName = args.event.subject ? nameOf(args.event.subject) : undefined;
+      const context = [
+        ...livelihoodPrompts(
+          { name, ...data.player },
+          data.agent,
+          { name: subjectName ?? '' },
+          null,
+          Date.now(),
+        ),
+        ...(args.event.subject && subjectName
+          ? socialPrompts(data.agent, args.playerId, args.event.subject, subjectName, nameOf)
+          : []),
+      ];
+      const messages = decisionPrompt({
+        name,
+        identity: data.identity,
+        context,
+        event: describeEvent(args.event, nameOf),
+        options: args.options,
+        subjectName,
+      });
+      const { content } = await chatCompletion(
+        { messages, max_tokens: 12, temperature: 0.7 },
+        llmTrace(ctx, `decision.${args.event.kind}`, args.playerId),
+      );
+      choice = parseChoice(content, args.options);
+      console.log(`[decision] ${args.playerId} LLM replied "${content.trim()}" -> ${choice}`);
+    } catch (e) {
+      console.error(`[decision] LLM decision failed for ${args.playerId}: ${String(e)}`);
+    }
+    const mode = choice ? 'llm' : 'llm-fallback';
+    await ctx.runMutation(api.aiTown.main.sendInput, {
+      worldId: args.worldId,
+      name: 'finishDecision',
+      args: {
+        agentId: args.agentId,
+        operationId: args.operationId,
+        event: args.event,
+        choice: choice ?? EVENT_OPTIONS[args.event.kind].fallback,
+        mode,
+        options: args.options,
+        latencyMs: Date.now() - started,
       },
     });
   },

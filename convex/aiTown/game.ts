@@ -25,6 +25,7 @@ import { internal } from '../_generated/api';
 import { HistoricalObject } from '../engine/historicalObject';
 import { AgentDescription, serializedAgentDescription } from './agentDescription';
 import { parseMap, serializeMap } from '../util/object';
+import { DecisionRow, decisionValidator } from '../metrics';
 
 const gameState = v.object({
   world: v.object(serializedWorld),
@@ -40,6 +41,8 @@ const gameStateDiff = v.object({
   agentDescriptions: v.optional(v.array(v.object(serializedAgentDescription))),
   worldMap: v.optional(v.object(serializedWorldMap)),
   agentOperations: v.array(v.object({ name: v.string(), args: v.any() })),
+  // Decision log rows (M3/M4), written to the `decisions` table on save.
+  decisionLogs: v.optional(v.array(decisionValidator)),
 });
 type GameStateDiff = Infer<typeof gameStateDiff>;
 
@@ -59,6 +62,7 @@ export class Game extends AbstractGame {
   agentDescriptions: Map<GameId<'agents'>, AgentDescription>;
 
   pendingOperations: Array<{ name: string; args: any }> = [];
+  pendingDecisionLogs: DecisionRow[] = [];
 
   numPathfinds: number;
 
@@ -154,6 +158,17 @@ export class Game extends AbstractGame {
     this.pendingOperations.push({ name, args });
   }
 
+  /** Queue a decision log row; saved with the next world diff. */
+  logDecision(row: Omit<DecisionRow, 'experiment' | 'runId'>) {
+    const experiment = process.env.EXPERIMENT_CONFIG;
+    const runId = process.env.EXPERIMENT_RUN_ID;
+    this.pendingDecisionLogs.push({
+      ...row,
+      ...(experiment ? { experiment } : {}),
+      ...(runId ? { runId } : {}),
+    });
+  }
+
   handleInput<Name extends InputNames>(now: number, name: Name, args: InputArgs<Name>) {
     const handler = inputs[name]?.handler;
     if (!handler) {
@@ -236,8 +251,10 @@ export class Game extends AbstractGame {
     const result: GameStateDiff = {
       world: { ...this.world.serialize(), historicalLocations },
       agentOperations: this.pendingOperations,
+      decisionLogs: this.pendingDecisionLogs,
     };
     this.pendingOperations = [];
+    this.pendingDecisionLogs = [];
     if (this.descriptionsModified) {
       result.playerDescriptions = serializeMap(this.playerDescriptions);
       result.agentDescriptions = serializeMap(this.agentDescriptions);
@@ -341,6 +358,9 @@ export class Game extends AbstractGame {
       }
     }
     // Start the desired agent operations.
+    for (const row of diff.decisionLogs ?? []) {
+      await ctx.db.insert('decisions', row);
+    }
     for (const operation of diff.agentOperations) {
       await runAgentOperation(ctx, operation.name, operation.args);
     }
