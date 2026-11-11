@@ -21,6 +21,7 @@ import { jobKind } from './aiTown/jobs';
 import { formatGameTime, gameHour } from './aiTown/clock';
 import { itemKind } from './aiTown/inventory';
 import { parseCoins } from './aiTown/economy';
+import { hungerLevel } from './aiTown/needs';
 
 // Clear all of the tables except for the embeddings cache.
 const excludedTables: Array<TableNames> = ['embeddingsCache'];
@@ -192,10 +193,20 @@ export const jobStatus = internalQuery({
             player?.activity && player.activity.until > now ? player.activity.description : null,
           inventory: player?.inventory ?? {},
           coins: parseCoins(player?.coins),
+          hunger: hungerLevel(a.needs?.lastAteAt, now),
           operation: a.inProgressOperation?.name ?? null,
         };
       }),
     };
+  },
+});
+
+// Apply data/characters.ts (descriptions, goals, jobs, shifts) to the default world.
+//   npx convex run testing:syncCharacters
+export const syncCharacters = internalMutation({
+  handler: async (ctx) => {
+    const { worldStatus } = await getDefaultWorld(ctx.db);
+    return await insertInput(ctx, worldStatus.worldId, 'syncCharacters', {});
   },
 });
 
