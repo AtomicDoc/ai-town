@@ -126,10 +126,11 @@ export function shareBeliefs(
   speakerId: string,
   listener: Social,
   listenerId: string,
+  include: (belief: Belief) => boolean = () => true,
 ): Belief[] {
   const learned: Belief[] = [];
   for (const belief of speaker.beliefs ?? []) {
-    if (belief.thief === listenerId) {
+    if (belief.thief === listenerId || !include(belief)) {
       continue;
     }
     const secondHand: Belief = {
@@ -145,6 +146,76 @@ export function shareBeliefs(
   return learned;
 }
 
+/** Words that, next to the thief's name, count as talking about the theft. */
+const THEFT_WORDS = [
+  'steal',
+  'stole',
+  'stolen',
+  'stealing',
+  'theft',
+  'thief',
+  'thieves',
+  'rob',
+  'robbed',
+  'robbing',
+  'swiped',
+  'pinched',
+  'nicked',
+  'pocketed',
+];
+/** Ambiguous verbs that only count when the victim or the item is named too. */
+const WEAK_THEFT_WORDS = ['took', 'taken', 'grabbed', 'snatched'];
+
+function containsWord(text: string, word: string): boolean {
+  const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\b${escaped}\\b`, 'i').test(text);
+}
+
+/**
+ * Whether a line of dialogue tells someone about a theft. It must name the
+ * thief and use a theft word ("stole", "thief", "robbed", ...); weaker verbs
+ * like "took" count only if the victim or the item is named too. Names shorter
+ * than 3 letters (e.g. the old default human name "Me") never match, to avoid
+ * false positives on common words.
+ */
+export function mentionsTheft(
+  text: string,
+  thiefName: string,
+  victimName: string,
+  item: string,
+): boolean {
+  if (thiefName.length < 3 || !containsWord(text, thiefName)) {
+    return false;
+  }
+  if (THEFT_WORDS.some((w) => containsWord(text, w))) {
+    return true;
+  }
+  const namesVictimOrItem =
+    (victimName.length >= 3 && containsWord(text, victimName)) || containsWord(text, item);
+  return namesVictimOrItem && WEAK_THEFT_WORDS.some((w) => containsWord(text, w));
+}
+
+/**
+ * Gossip from one line of dialogue: the listener learns each of the speaker's
+ * beliefs that the line actually talks about. Returns what was learned.
+ */
+export function gossipFromLine(
+  game: Game,
+  speakerId: string,
+  listenerId: string,
+  text: string,
+): Belief[] {
+  const speaker = agentOfPlayer(game, speakerId);
+  const listener = agentOfPlayer(game, listenerId);
+  if (!speaker || !listener) {
+    return [];
+  }
+  const nameOf = (id: string) => game.playerDescriptions.get(id as GameId<'players'>)?.name ?? '';
+  return shareBeliefs(speaker, speakerId, listener, listenerId, (b) =>
+    mentionsTheft(text, nameOf(b.thief), nameOf(b.victim), b.item),
+  );
+}
+
 /** One-sentence description of a belief from the holder's point of view. */
 export function describeBelief(
   belief: Belief,
@@ -155,6 +226,10 @@ export function describeBelief(
   const victim = belief.victim === selfId ? 'you' : nameOf(belief.victim);
   const object = `${belief.quantity} ${belief.item} from ${victim}`;
   if (belief.source === 'witnessed') {
+    // Victims always know they were robbed and by whom, seen or not.
+    if (belief.victim === selfId) {
+      return `${thief === 'you' ? 'You' : thief} stole ${object}.`;
+    }
     return `You saw ${thief} steal ${object}.`;
   }
   const teller = belief.toldBy ? nameOf(belief.toldBy) : 'Someone';
@@ -236,10 +311,10 @@ export function recordTheft(
   victimId: string,
   item: ItemKind,
   quantity: number,
-): { witnesses: string[]; victimSaw: boolean } {
+): { witnesses: string[]; victimKnows: boolean } {
   const thief = game.world.players.get(thiefId as GameId<'players'>);
   if (!thief) {
-    return { witnesses: [], victimSaw: false };
+    return { witnesses: [], victimKnows: false };
   }
   const belief: Belief = {
     kind: 'theft',
@@ -250,18 +325,19 @@ export function recordTheft(
     at: now,
     source: 'witnessed',
   };
-  const seen = witnessesAt(game, thief.position, [thiefId]);
-  const witnesses: string[] = [];
-  let victimSaw = false;
-  for (const agent of seen) {
-    addBelief(agent, belief);
-    if (agent.playerId === victimId) {
-      victimSaw = true;
-      adjustOpinion(agent, thiefId, OPINION_DELTAS.stolenFrom);
-    } else {
-      witnesses.push(agent.playerId);
-      adjustOpinion(agent, thiefId, OPINION_DELTAS.witnessedTheft);
-    }
+  // The victim always knows they were robbed, and by whom, even if they were
+  // away from their stall (a deliberate simplification for the study).
+  const victim = agentOfPlayer(game, victimId);
+  if (victim) {
+    addBelief(victim, belief);
+    adjustOpinion(victim, thiefId, OPINION_DELTAS.stolenFrom);
   }
-  return { witnesses, victimSaw };
+  // Bystanders within sight form first-hand beliefs too.
+  const witnesses: string[] = [];
+  for (const agent of witnessesAt(game, thief.position, [thiefId, victimId])) {
+    addBelief(agent, belief);
+    adjustOpinion(agent, thiefId, OPINION_DELTAS.witnessedTheft);
+    witnesses.push(agent.playerId);
+  }
+  return { witnesses, victimKnows: !!victim };
 }

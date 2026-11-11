@@ -406,6 +406,8 @@ export const agentSendMessage = internalMutation({
       timestamp: Date.now(),
       leaveConversation: args.leaveConversation,
       operationId: args.operationId,
+      // The engine checks the line for gossip (relationships.gossipFromLine).
+      text: args.text,
     });
   },
 });

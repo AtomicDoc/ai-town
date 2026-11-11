@@ -7,6 +7,8 @@ import {
   adjustOpinion,
   describeBelief,
   getOpinion,
+  gossipFromLine,
+  mentionsTheft,
   opinionPhrase,
   shareBeliefs,
   socialPrompts,
@@ -25,7 +27,12 @@ const theft = (overrides: Partial<Belief> = {}): Belief => ({
   source: 'witnessed',
   ...overrides,
 });
-const names: Record<string, string> = { 'p:1': 'Me', 'p:2': 'Alice', 'p:3': 'Lucky', 'p:4': 'Bob' };
+const names: Record<string, string> = {
+  'p:1': 'Traveler',
+  'p:2': 'Alice',
+  'p:3': 'Lucky',
+  'p:4': 'Bob',
+};
 const nameOf = (id: string) => names[id] ?? id;
 
 describe('opinions', () => {
@@ -78,11 +85,14 @@ describe('beliefs', () => {
   });
 
   test('describeBelief', () => {
-    expect(describeBelief(theft(), 'p:3', nameOf)).toBe('You saw Me steal 1 bread from Alice.');
+    expect(describeBelief(theft(), 'p:3', nameOf)).toBe(
+      'You saw Traveler steal 1 bread from Alice.',
+    );
     expect(
       describeBelief(theft({ source: 'told', toldBy: 'p:3' as Belief['thief'] }), 'p:4', nameOf),
-    ).toBe('Lucky told you that Me stole 1 bread from Alice.');
-    expect(describeBelief(theft(), 'p:2', nameOf)).toBe('You saw Me steal 1 bread from you.');
+    ).toBe('Lucky told you that Traveler stole 1 bread from Alice.');
+    // Victims know who robbed them whether or not they saw it.
+    expect(describeBelief(theft(), 'p:2', nameOf)).toBe('Traveler stole 1 bread from you.');
   });
 
   test('socialPrompts: confront the thief, gossip to others', () => {
@@ -90,12 +100,12 @@ describe('beliefs', () => {
       beliefs: [theft()],
       opinions: [{ playerId: 'p:1' as Belief['thief'], score: -20 }],
     };
-    expect(socialPrompts(lucky, 'p:3', 'p:1', 'Me', nameOf)).toEqual([
-      'You distrust Me.',
-      'You saw Me steal 1 bread from Alice.',
+    expect(socialPrompts(lucky, 'p:3', 'p:1', 'Traveler', nameOf)).toEqual([
+      'You distrust Traveler.',
+      'You saw Traveler steal 1 bread from Alice.',
     ]);
     expect(socialPrompts(lucky, 'p:3', 'p:4', 'Bob', nameOf)).toEqual([
-      'News you know: You saw Me steal 1 bread from Alice. You may bring it up if it fits the conversation.',
+      'News you know: You saw Traveler steal 1 bread from Alice. You may bring it up if it fits the conversation.',
     ]);
   });
 });
@@ -151,7 +161,9 @@ describe('player actions (fake world)', () => {
     const me = players.get('p:1')!;
     const alice = players.get('p:2')!;
     const message = performPlayerAction(game, 5000, me as any, alice as any, 'steal');
-    expect(message).toBe('You stole 1 wheat from Alice. Seen by: Alice, Lucky.');
+    expect(message).toBe(
+      'You stole 1 wheat from Alice. Alice will know it was you. Seen by: Lucky.',
+    );
     expect(me.inventory).toEqual({ wheat: 1 });
 
     const lucky = agents.get('a:3')!;
@@ -161,11 +173,40 @@ describe('player actions (fake world)', () => {
     expect(getOpinion(agents.get('a:2')!, 'p:1')).toBe(OPINION_DELTAS.stolenFrom);
     expect(bob.beliefs).toBeUndefined(); // too far away to see
 
-    shareBeliefs(lucky, 'p:3', bob, 'p:4'); // what Conversation.stop does
+    // Small talk that doesn't mention the theft passes nothing on.
+    expect(gossipFromLine(game, 'p:3', 'p:4', 'Lovely weather for the harvest, Bob.')).toEqual([]);
+    expect(gossipFromLine(game, 'p:3', 'p:4', 'Traveler went for a walk.')).toEqual([]);
+    expect(bob.beliefs).toBeUndefined();
+
+    // Lucky actually tells Bob (what agentFinishSendingMessage does per line).
+    const learned = gossipFromLine(
+      game,
+      'p:3',
+      'p:4',
+      'Did you hear? That Traveler stole wheat right from under Alice’s nose!',
+    );
+    expect(learned).toHaveLength(1);
     expect(describeBelief(bob.beliefs![0], 'p:4', nameOf)).toBe(
-      'Lucky told you that Me stole 1 wheat from Alice.',
+      'Lucky told you that Traveler stole 1 wheat from Alice.',
     );
     expect(getOpinion(bob, 'p:1')).toBe(OPINION_DELTAS.heardAboutTheft);
+  });
+
+  test('the victim knows even when robbed at an unattended stall', () => {
+    const { game, players, agents } = world();
+    const me = players.get('p:1')!;
+    const alice = players.get('p:2')!;
+    alice.position = { x: 60, y: 45 }; // far away
+    me.position = { x: 30, y: 21 }; // at Alice's bakery
+    const message = performPlayerAction(game, 7000, me as any, alice as any, 'steal');
+    expect(message).toBe(
+      'You stole 1 wheat from Alice. Alice will know it was you. No one else saw you.',
+    );
+    const aliceAgent = agents.get('a:2')!;
+    expect(describeBelief(aliceAgent.beliefs![0], 'p:2', nameOf)).toBe(
+      'Traveler stole 1 wheat from you.',
+    );
+    expect(getOpinion(aliceAgent, 'p:1')).toBe(OPINION_DELTAS.stolenFrom);
   });
 
   test('buy needs stock and coins; too far away is refused', () => {
@@ -217,6 +258,31 @@ describe('player actions (fake world)', () => {
     expect(() =>
       performPlayerAction(game, 300, me as any, players.get('p:3') as any, 'help'),
     ).toThrow('Get closer to Lucky first.');
+  });
+});
+
+describe('mentionsTheft', () => {
+  const says = (text: string) => mentionsTheft(text, 'Traveler', 'Alice', 'bread');
+
+  test('thief name plus a theft word', () => {
+    expect(says('I saw the traveler steal from the bakery.')).toBe(true);
+    expect(says('Traveler is a thief, mark my words.')).toBe(true);
+    expect(says('Alice got robbed by Traveler this morning.')).toBe(true);
+  });
+
+  test('weak verbs need the victim or the item named too', () => {
+    expect(says('Traveler took a walk by the river.')).toBe(false);
+    expect(says('Traveler took bread without paying!')).toBe(true);
+    expect(says('Traveler snatched something from Alice.')).toBe(true);
+  });
+
+  test('no thief name, or only small talk: no', () => {
+    expect(says('Someone stole bread from Alice.')).toBe(false);
+    expect(says('Traveler and Alice were at the market.')).toBe(false);
+  });
+
+  test('very short names never match', () => {
+    expect(mentionsTheft('Me? I stole nothing!', 'Me', 'Alice', 'bread')).toBe(false);
   });
 });
 
