@@ -1,10 +1,12 @@
 // Traditional (non-LLM) job system. Milestone 2.
 //
 // A job is a scripted routine: during shift hours the agent walks to its
-// workplace and repeats a work task, producing output each time a task
-// completes. None of this schedules an agent operation, so a working agent
-// makes zero LLM calls. Outside shift hours the agent falls back to stock
-// AI Town behavior (wandering, conversations).
+// workplace and repeats a work task. A task may consume input items (baker:
+// 2 wheat) and produces output items (bread). After the shift, a job may
+// deliver its output to another job's workplace and sell it there (farmer
+// sells wheat to the baker). None of this schedules an agent operation, so a
+// working agent makes zero LLM calls. When there's nothing to do, the agent
+// falls back to stock AI Town behavior (wandering, conversations).
 //
 // Structure:
 //   - decideJobStep(): pure decision function, unit-tested in jobs.test.ts.
@@ -16,9 +18,11 @@
 import { Infer, ObjectType, v } from 'convex/values';
 import { Point, point } from '../util/types';
 import { distance } from '../util/geometry';
+import { GAME_DAY_LENGTH } from '../constants';
 import { gameHour, inHourWindow } from './clock';
 import { movePlayer } from './movement';
-import { ItemKind, addItem, countItem } from './inventory';
+import { ItemKind, addItem, countItem, removeItem } from './inventory';
+import { PRICES, sellUpTo } from './economy';
 import type { Game } from './game';
 import type { Player } from './player';
 
@@ -26,10 +30,9 @@ import type { Player } from './player';
 // Definitions
 // ---------------------------------------------------------------------------
 
-// Extend with v.union(v.literal('farmer'), v.literal('baker'), ...) as jobs are added.
-export const jobKind = v.literal('farmer');
+export const jobKind = v.union(v.literal('farmer'), v.literal('baker'));
 export type JobKind = Infer<typeof jobKind>;
-export const JOB_KINDS: readonly JobKind[] = ['farmer'];
+export const JOB_KINDS: readonly JobKind[] = ['farmer', 'baker'];
 
 export function isJobKind(value: unknown): value is JobKind {
   return typeof value === 'string' && (JOB_KINDS as readonly string[]).includes(value);
@@ -43,9 +46,19 @@ export type JobDefinition = {
   shiftStartHour: number;
   shiftEndHour: number;
   /** One unit of work, shown in the UI as the player's activity. */
-  task: { description: string; emoji: string; duration: number };
+  task: {
+    description: string;
+    emoji: string;
+    duration: number;
+    /** Items used up by one task. The task only starts if they're held. */
+    consumes?: { item: ItemKind; amount: number };
+  };
   /** What one completed task adds to the worker's inventory. */
   output: { item: ItemKind; amount: number };
+  /** Shown while on shift at work but missing the task's inputs. */
+  waitingActivity?: { description: string; emoji: string };
+  /** After the shift, carry `item` to the `toJob` worker's workplace and sell it. */
+  delivery?: { item: ItemKind; toJob: JobKind; minBatch: number };
 };
 
 export const JOB_DEFINITIONS: Record<JobKind, JobDefinition> = {
@@ -57,11 +70,34 @@ export const JOB_DEFINITIONS: Record<JobKind, JobDefinition> = {
     shiftEndHour: 16,
     task: { description: 'farming', emoji: '🌾', duration: 30_000 },
     output: { item: 'wheat', amount: 1 },
+    delivery: { item: 'wheat', toJob: 'baker', minBatch: 4 },
+  },
+  baker: {
+    title: 'baker',
+    // Open ground in the upper-middle of the map, reachable from the field.
+    workplaceTarget: { x: 30, y: 20 },
+    // Bakes in the morning with wheat delivered the previous afternoon.
+    shiftStartHour: 4,
+    shiftEndHour: 12,
+    task: {
+      description: 'baking',
+      emoji: '🍞',
+      duration: 45_000,
+      consumes: { item: 'wheat', amount: 2 },
+    },
+    output: { item: 'bread', amount: 1 },
+    waitingActivity: { description: 'waiting for wheat', emoji: '⏳' },
   },
 };
 
-/** How close (in tiles) counts as "at the workplace". Pathfinding can stop short if the tile is occupied. */
+/** How close (in tiles) counts as "arrived". Pathfinding can stop short if the tile is occupied. */
 export const WORKPLACE_ARRIVAL_DISTANCE = 2;
+
+/** Minimum time between delivery attempts, so a failed sale doesn't loop. */
+export const DELIVERY_COOLDOWN = GAME_DAY_LENGTH / 2;
+
+/** How long one "waiting for inputs" activity lasts before being re-checked/refreshed. */
+export const WAITING_ACTIVITY_DURATION = 15_000;
 
 // ---------------------------------------------------------------------------
 // Serialized state (stored on the agent inside the world document)
@@ -75,6 +111,8 @@ export const serializedJob = {
   taskEndsAt: v.optional(v.number()),
   /** Lifetime units produced (a metric; the items themselves go to the player's inventory). */
   produced: v.number(),
+  /** When the last delivery was attempted (successful or not). */
+  lastDeliveryAt: v.optional(v.number()),
 };
 export type SerializedJob = ObjectType<typeof serializedJob>;
 
@@ -92,16 +130,46 @@ export type JobSnapshot = {
   position: Point;
   pathfindingDestination?: Point;
   activity?: { description: string; until: number };
+  /** True if the task's inputs are held (or the task needs none). */
+  hasInputs: boolean;
+  /** Set when a delivery is due now: where to take it. */
+  delivery?: { destination: Point };
 };
 
 export type JobStep =
   | { kind: 'offShift' }
   | { kind: 'walkToWork'; destination: Point }
+  | { kind: 'walkToDelivery'; destination: Point }
   | { kind: 'walking' }
+  | { kind: 'deliver' }
+  | { kind: 'waitForInputs' }
   | { kind: 'startTask'; until: number }
   | { kind: 'working' }
   | { kind: 'completeTask' }
   | { kind: 'abandonTask' };
+
+/** Walk to `target`, or report that we've arrived and stopped moving. */
+function approach(
+  s: JobSnapshot,
+  target: Point,
+  walkStep: (destination: Point) => JobStep,
+): JobStep | 'arrived' {
+  const dest = s.pathfindingDestination;
+  if (distance(s.position, target) > WORKPLACE_ARRIVAL_DISTANCE) {
+    // The pathfinder may swap an occupied destination for a nearby open tile,
+    // so "heading there" means heading anywhere that counts as arrived.
+    if (dest && distance(dest, target) <= WORKPLACE_ARRIVAL_DISTANCE) {
+      return { kind: 'walking' };
+    }
+    return walkStep(target);
+  }
+  // Close enough but still moving: let the walk finish. Agent.tick cancels
+  // any activity started while pathfinding, so acting now would be undone.
+  if (dest) {
+    return { kind: 'walking' };
+  }
+  return 'arrived';
+}
 
 export function decideJobStep(
   job: SerializedJob,
@@ -120,29 +188,29 @@ export function decideJobStep(
     return s.now >= job.taskEndsAt ? { kind: 'completeTask' } : { kind: 'working' };
   }
 
-  // 2. Outside shift hours the job doesn't drive behavior.
+  // 2. Off shift: deliver output if a delivery is due, otherwise let stock
+  // AI Town behavior run.
   if (!inHourWindow(s.hour, def.shiftStartHour, def.shiftEndHour)) {
-    return { kind: 'offShift' };
-  }
-
-  // 3. Get to work.
-  if (distance(s.position, workplace) > WORKPLACE_ARRIVAL_DISTANCE) {
-    const dest = s.pathfindingDestination;
-    // The pathfinder may swap an occupied destination for a nearby open tile,
-    // so "heading to work" means heading anywhere that counts as arrived.
-    if (dest && distance(dest, workplace) <= WORKPLACE_ARRIVAL_DISTANCE) {
-      return { kind: 'walking' };
+    if (!s.delivery) {
+      return { kind: 'offShift' };
     }
-    return { kind: 'walkToWork', destination: workplace };
+    const step = approach(s, s.delivery.destination, (destination) => ({
+      kind: 'walkToDelivery',
+      destination,
+    }));
+    return step === 'arrived' ? { kind: 'deliver' } : step;
   }
 
-  // 4. Close enough but still moving: let the walk finish. Agent.tick cancels
-  // any activity started while pathfinding, so starting now would be undone.
-  if (s.pathfindingDestination) {
-    return { kind: 'walking' };
+  // 3. On shift: get to work.
+  const step = approach(s, workplace, (destination) => ({ kind: 'walkToWork', destination }));
+  if (step !== 'arrived') {
+    return step;
   }
 
-  // 5. At work and idle: start the next task.
+  // 4. At work: start the next task if its inputs are on hand.
+  if (!s.hasInputs) {
+    return { kind: 'waitForInputs' };
+  }
   return { kind: 'startTask', until: s.now + def.task.duration };
 }
 
@@ -150,6 +218,19 @@ export function decideJobStep(
 export function isOnShift(job: SerializedJob, hour: number): boolean {
   const def = JOB_DEFINITIONS[job.kind];
   return job.taskEndsAt !== undefined || inHourWindow(hour, def.shiftStartHour, def.shiftEndHour);
+}
+
+/** Whether the job should attempt a delivery now (ignoring where the recipient is). */
+export function deliveryDue(
+  job: SerializedJob,
+  def: JobDefinition,
+  held: number,
+  now: number,
+): boolean {
+  if (!def.delivery || held < def.delivery.minBatch) {
+    return false;
+  }
+  return job.lastDeliveryAt === undefined || now - job.lastDeliveryAt >= DELIVERY_COOLDOWN;
 }
 
 /**
@@ -199,24 +280,58 @@ export function findOpenTile(
 // Engine integration
 // ---------------------------------------------------------------------------
 
+function resolveWorkplace(game: Game, job: SerializedJob): Point {
+  if (!job.workplace) {
+    const target = JOB_DEFINITIONS[job.kind].workplaceTarget;
+    job.workplace = findOpenTile(game.worldMap, target) ?? target;
+  }
+  return job.workplace;
+}
+
+/** First agent holding `kind` job, with its player. */
+function findWorker(game: Game, kind: JobKind) {
+  for (const agent of game.world.agents.values()) {
+    if (agent.job?.kind === kind) {
+      const player = game.world.players.get(agent.playerId);
+      if (player) {
+        return { job: agent.job, player };
+      }
+    }
+  }
+  return undefined;
+}
+
 /**
  * Advance an agent's job by one engine tick. Returns true if the job is
  * driving the agent this tick (caller should not fall through to
- * agentDoSomething), false if the agent is off shift.
+ * agentDoSomething), false if there's nothing for the job to do.
  *
  * Callers must only invoke this when the agent is not in a conversation.
  */
 export function tickJob(game: Game, now: number, job: SerializedJob, player: Player): boolean {
   const def = JOB_DEFINITIONS[job.kind];
-  if (!job.workplace) {
-    job.workplace = findOpenTile(game.worldMap, def.workplaceTarget) ?? def.workplaceTarget;
+  const workplace = resolveWorkplace(game, job);
+
+  const consumes = def.task.consumes;
+  const hasInputs = !consumes || countItem(player.inventory, consumes.item) >= consumes.amount;
+
+  let recipient: ReturnType<typeof findWorker>;
+  let delivery: JobSnapshot['delivery'];
+  if (def.delivery && deliveryDue(job, def, countItem(player.inventory, def.delivery.item), now)) {
+    recipient = findWorker(game, def.delivery.toJob);
+    if (recipient && recipient.player.id !== player.id) {
+      delivery = { destination: resolveWorkplace(game, recipient.job) };
+    }
   }
-  const step = decideJobStep(job, def, job.workplace, {
+
+  const step = decideJobStep(job, def, workplace, {
     now,
     hour: gameHour(now),
     position: player.position,
     pathfindingDestination: player.pathfinding?.destination,
     activity: player.activity,
+    hasInputs,
+    delivery,
   });
 
   switch (step.kind) {
@@ -226,11 +341,29 @@ export function tickJob(game: Game, now: number, job: SerializedJob, player: Pla
     case 'working':
       return true;
     case 'walkToWork':
-      // Drop any leftover stock activity (reading, daydreaming) before commuting.
+    case 'walkToDelivery':
+      // Drop any leftover stock activity (reading, daydreaming) before walking.
       if (player.activity && player.activity.until > now) {
         player.activity.until = now;
       }
       movePlayer(game, now, player, step.destination);
+      return true;
+    case 'deliver': {
+      const item = def.delivery!.item;
+      const held = countItem(player.inventory, item);
+      const sold = recipient ? sellUpTo(player, recipient.player, item, held) : 0;
+      job.lastDeliveryAt = now;
+      console.log(
+        `[econ] ${player.id} (${def.title}) sold ${sold}/${held} ${item}` +
+          ` to ${recipient?.player.id} for ${sold * PRICES[item]} coins` +
+          ` (seller ${player.coins}, buyer ${recipient?.player.coins})`,
+      );
+      return true;
+    }
+    case 'waitForInputs':
+      if (def.waitingActivity && !(player.activity && player.activity.until > now)) {
+        player.activity = { ...def.waitingActivity, until: now + WAITING_ACTIVITY_DURATION };
+      }
       return true;
     case 'startTask':
       player.activity = {
@@ -240,16 +373,22 @@ export function tickJob(game: Game, now: number, job: SerializedJob, player: Pla
       };
       job.taskEndsAt = step.until;
       return true;
-    case 'completeTask':
+    case 'completeTask': {
       delete job.taskEndsAt;
+      if (consumes && !removeItem(player.inventory, consumes.item, consumes.amount)) {
+        console.log(`[job] ${player.id} (${def.title}) missing ${consumes.item}, nothing produced`);
+        return true;
+      }
       job.produced += def.output.amount;
       const added = addItem(player.inventory, def.output.item, def.output.amount);
       console.log(
         `[job] ${player.id} (${def.title}) produced ${def.output.amount} ${def.output.item}` +
+          `${consumes ? ` from ${consumes.amount} ${consumes.item}` : ''}` +
           ` (lifetime ${job.produced}, holding ${countItem(player.inventory, def.output.item)}` +
           `${added < def.output.amount ? ', inventory full' : ''})`,
       );
       return true;
+    }
     case 'abandonTask':
       delete job.taskEndsAt;
       console.log(`[job] ${player.id} (${def.title}) task interrupted`);

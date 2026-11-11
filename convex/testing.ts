@@ -19,6 +19,8 @@ import { startConversationMessage } from './agent/conversation';
 import { GameId } from './aiTown/ids';
 import { jobKind } from './aiTown/jobs';
 import { formatGameTime, gameHour } from './aiTown/clock';
+import { itemKind } from './aiTown/inventory';
+import { parseCoins } from './aiTown/economy';
 
 // Clear all of the tables except for the embeddings cache.
 const excludedTables: Array<TableNames> = ['embeddingsCache'];
@@ -189,10 +191,40 @@ export const jobStatus = internalQuery({
           activity:
             player?.activity && player.activity.until > now ? player.activity.description : null,
           inventory: player?.inventory ?? {},
+          coins: parseCoins(player?.coins),
           operation: a.inProgressOperation?.name ?? null,
         };
       }),
     };
+  },
+});
+
+// Give (or with negative numbers, take) items and coins, by player name.
+//   npx convex run testing:give '{"name":"Alice","item":"wheat","quantity":6}'
+//   npx convex run testing:give '{"name":"Alice","coins":100}'
+export const give = internalMutation({
+  args: {
+    name: v.string(),
+    item: v.optional(itemKind),
+    quantity: v.optional(v.number()),
+    coins: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const { worldStatus } = await getDefaultWorld(ctx.db);
+    const descriptions = await ctx.db
+      .query('playerDescriptions')
+      .withIndex('worldId', (q) => q.eq('worldId', worldStatus.worldId))
+      .collect();
+    const description = descriptions.find((d) => d.name === args.name);
+    if (!description) {
+      throw new Error(`No player named ${args.name} in the default world`);
+    }
+    return await insertInput(ctx, worldStatus.worldId, 'debugGive', {
+      playerId: description.playerId,
+      item: args.item,
+      quantity: args.quantity,
+      coins: args.coins,
+    });
   },
 });
 

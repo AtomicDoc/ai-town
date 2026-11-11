@@ -51,6 +51,8 @@ export const Descriptions = [
     character: 'f3',
     identity: `Alice is a famous scientist. She is smarter than everyone else and has discovered mysteries of the universe no one else can understand. As a result she often speaks in oblique riddles. She comes across as confused and forgetful.`,
     plan: 'You want to figure out how the world works.',
+    // Scripted job (convex/aiTown/jobs.ts); existing worlds: testing:assignJob.
+    job: 'baker',
   },
   {
     name: 'Pete',
