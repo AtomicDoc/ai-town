@@ -2,7 +2,8 @@ import { v } from 'convex/values';
 import { ActionCtx, DatabaseReader, internalMutation, internalQuery } from '../_generated/server';
 import { Doc, Id } from '../_generated/dataModel';
 import { internal } from '../_generated/api';
-import { LLMMessage, chatCompletion, fetchEmbedding } from '../util/llm';
+import { LLMMessage, LlmTrace, chatCompletion, fetchEmbedding } from '../util/llm';
+import { llmTrace } from '../util/llmTrace';
 import { asyncMap } from '../util/asyncMap';
 import { GameId, agentId, conversationId, playerId } from '../aiTown/ids';
 import { SerializedPlayer } from '../aiTown/player';
@@ -58,15 +59,24 @@ export async function rememberConversation(
     });
   }
   llmMessages.push({ role: 'user', content: 'Summary:' });
-  const { content } = await chatCompletion({
-    messages: llmMessages,
-    max_tokens: 500,
-  });
+  const { content } = await chatCompletion(
+    {
+      messages: llmMessages,
+      max_tokens: 500,
+    },
+    llmTrace(ctx, 'memory.summary', playerId),
+  );
   const description = `Conversation with ${otherPlayer.name} at ${new Date(
     data.conversation._creationTime,
   ).toLocaleString()}: ${content}`;
-  const importance = await calculateImportance(description);
-  const { embedding } = await fetchEmbedding(description);
+  const importance = await calculateImportance(
+    description,
+    llmTrace(ctx, 'memory.importance', playerId),
+  );
+  const { embedding } = await fetchEmbedding(
+    description,
+    llmTrace(ctx, 'embedding.memory', playerId),
+  );
   authors.delete(player.id as GameId<'players'>);
   await ctx.runMutation(selfInternal.insertMemory, {
     agentId,
@@ -243,19 +253,22 @@ export const loadMessages = internalQuery({
   },
 });
 
-async function calculateImportance(description: string) {
-  const { content: importanceRaw } = await chatCompletion({
-    messages: [
-      {
-        role: 'user',
-        content: `On the scale of 0 to 9, where 0 is purely mundane (e.g., brushing teeth, making bed) and 9 is extremely poignant (e.g., a break up, college acceptance), rate the likely poignancy of the following piece of memory.
+async function calculateImportance(description: string, trace?: LlmTrace) {
+  const { content: importanceRaw } = await chatCompletion(
+    {
+      messages: [
+        {
+          role: 'user',
+          content: `On the scale of 0 to 9, where 0 is purely mundane (e.g., brushing teeth, making bed) and 9 is extremely poignant (e.g., a break up, college acceptance), rate the likely poignancy of the following piece of memory.
       Memory: ${description}
       Answer on a scale of 0 to 9. Respond with number only, e.g. "5"`,
-      },
-    ],
-    temperature: 0.0,
-    max_tokens: 1,
-  });
+        },
+      ],
+      temperature: 0.0,
+      max_tokens: 1,
+    },
+    trace,
+  );
 
   let importance = parseFloat(importanceRaw);
   if (isNaN(importance)) {
@@ -359,21 +372,30 @@ async function reflectOnMemories(
     'Example: [{insight: "...", statementIds: [1,2]}, {insight: "...", statementIds: [1]}, ...]',
   );
 
-  const { content: reflection } = await chatCompletion({
-    messages: [
-      {
-        role: 'user',
-        content: prompt.join('\n'),
-      },
-    ],
-  });
+  const { content: reflection } = await chatCompletion(
+    {
+      messages: [
+        {
+          role: 'user',
+          content: prompt.join('\n'),
+        },
+      ],
+    },
+    llmTrace(ctx, 'memory.reflection', playerId),
+  );
 
   try {
     const insights = JSON.parse(reflection) as { insight: string; statementIds: number[] }[];
     const memoriesToSave = await asyncMap(insights, async (item) => {
       const relatedMemoryIds = item.statementIds.map((idx: number) => memories[idx]._id);
-      const importance = await calculateImportance(item.insight);
-      const { embedding } = await fetchEmbedding(item.insight);
+      const importance = await calculateImportance(
+        item.insight,
+        llmTrace(ctx, 'memory.importance', playerId),
+      );
+      const { embedding } = await fetchEmbedding(
+        item.insight,
+        llmTrace(ctx, 'embedding.memory', playerId),
+      );
       console.debug('adding reflection memory...', item.insight);
       return {
         description: item.insight,

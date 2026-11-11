@@ -2,6 +2,7 @@ import { v } from 'convex/values';
 import { Id } from '../_generated/dataModel';
 import { ActionCtx, internalQuery } from '../_generated/server';
 import { LLMMessage, chatCompletion } from '../util/llm';
+import { llmTrace } from '../util/llmTrace';
 import * as memory from './memory';
 import { api, internal } from '../_generated/api';
 import * as embeddingsCache from './embeddingsCache';
@@ -62,11 +63,14 @@ export async function startConversationMessage(
     { role: 'user', content: lastPrompt },
   ];
 
-  const { content } = await chatCompletion({
-    messages,
-    max_tokens: 300,
-    stop: stopWords(otherPlayer.name, player.name),
-  });
+  const { content } = await chatCompletion(
+    {
+      messages,
+      max_tokens: 300,
+      stop: stopWords(otherPlayer.name, player.name),
+    },
+    llmTrace(ctx, 'conversation.start', playerId),
+  );
   return trimContentPrefx(content, lastPrompt);
 }
 
@@ -84,6 +88,7 @@ export async function continueConversationMessage(
   playerId: GameId<'players'>,
   otherPlayerId: GameId<'players'>,
 ): Promise<string> {
+  const trace = llmTrace(ctx, 'conversation.continue', playerId);
   const { player, otherPlayer, conversation, agent, otherAgent } = await ctx.runQuery(
     selfInternal.queryPromptData,
     {
@@ -128,11 +133,14 @@ export async function continueConversationMessage(
   const lastPrompt = `${player.name} to ${otherPlayer.name}:`;
   llmMessages.push({ role: 'user', content: lastPrompt });
 
-  const { content } = await chatCompletion({
-    messages: llmMessages,
-    max_tokens: 300,
-    stop: stopWords(otherPlayer.name, player.name),
-  });
+  const { content } = await chatCompletion(
+    {
+      messages: llmMessages,
+      max_tokens: 300,
+      stop: stopWords(otherPlayer.name, player.name),
+    },
+    trace,
+  );
   return trimContentPrefx(content, lastPrompt);
 }
 
@@ -152,6 +160,7 @@ export async function leaveConversationMessage(
       conversationId,
     },
   );
+  const trace = llmTrace(ctx, 'conversation.leave', playerId);
   const prompt = [
     `You are ${player.name}, and you're currently in a conversation with ${otherPlayer.name}.`,
     `You've decided to leave the question and would like to politely tell them you're leaving the conversation.`,
@@ -177,11 +186,14 @@ export async function leaveConversationMessage(
   const lastPrompt = `${player.name} to ${otherPlayer.name}:`;
   llmMessages.push({ role: 'user', content: lastPrompt });
 
-  const { content } = await chatCompletion({
-    messages: llmMessages,
-    max_tokens: 300,
-    stop: stopWords(otherPlayer.name, player.name),
-  });
+  const { content } = await chatCompletion(
+    {
+      messages: llmMessages,
+      max_tokens: 300,
+      stop: stopWords(otherPlayer.name, player.name),
+    },
+    trace,
+  );
   return trimContentPrefx(content, lastPrompt);
 }
 

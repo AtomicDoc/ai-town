@@ -58,6 +58,11 @@ export const heartbeatWorld = mutation({
 
 export const stopInactiveWorlds = internalMutation({
   handler: async (ctx) => {
+    // For unattended runs (benchmarks), keep the world going with no viewer:
+    //   npx convex env set KEEP_WORLD_RUNNING true    (undo: npx convex env remove KEEP_WORLD_RUNNING)
+    if (process.env.KEEP_WORLD_RUNNING === 'true') {
+      return;
+    }
     const cutoff = Date.now() - IDLE_WORLD_TIMEOUT;
     const worlds = await ctx.db.query('worldStatus').collect();
     for (const worldStatus of worlds) {
