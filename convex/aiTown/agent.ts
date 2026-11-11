@@ -32,6 +32,16 @@ import {
 import { gameHour } from './clock';
 import { SerializedNeeds, serializedNeeds, tickNeeds } from './needs';
 import { Belief, Opinion, serializedBelief, serializedOpinion } from './relationships';
+import { AgentEvent, serializedEvent } from './decisionPolicy';
+import {
+  ApproachSeen,
+  Intent,
+  detectPlayerApproach,
+  processEvents,
+  serializedApproachSeen,
+  serializedIntent,
+  tickIntent,
+} from './decisions';
 
 /** True if `playerId` belongs to an agent currently working a job shift. */
 function isOnShiftWorker(game: Game, playerId: GameId<'players'>, now: number): boolean {
@@ -54,6 +64,9 @@ export class Agent {
   needs?: SerializedNeeds;
   opinions?: Opinion[];
   beliefs?: Belief[];
+  pendingEvents?: AgentEvent[];
+  intent?: Intent;
+  approachSeen?: ApproachSeen[];
 
   constructor(serialized: SerializedAgent) {
     const { id, lastConversation, lastInviteAttempt, inProgressOperation } = serialized;
@@ -71,6 +84,9 @@ export class Agent {
     this.needs = serialized.needs && { ...serialized.needs };
     this.opinions = serialized.opinions?.map((o) => ({ ...o }));
     this.beliefs = serialized.beliefs?.map((b) => ({ ...b }));
+    this.pendingEvents = serialized.pendingEvents?.map((e) => ({ ...e }));
+    this.intent = serialized.intent && { ...serialized.intent };
+    this.approachSeen = serialized.approachSeen?.map((s) => ({ ...s }));
   }
 
   tick(game: Game, now: number) {
@@ -117,6 +133,15 @@ export class Agent {
       // worker wander off and invite someone new mid-shift.
       if (working && this.toRemember) {
         this.startRemembering(game, now);
+        return;
+      }
+      // Unusual events (M3): routed through the decision policy, which may
+      // ask the LLM. Then any multi-step plan the decision produced.
+      detectPlayerApproach(game, now, this, player);
+      if (processEvents(game, now, this, player)) {
+        return;
+      }
+      if (tickIntent(game, now, this, player)) {
         return;
       }
       // Eating (any time, between tasks) and food shopping (off shift).
@@ -337,6 +362,13 @@ export class Agent {
       needs: this.needs && { ...this.needs },
       opinions: this.opinions?.length ? this.opinions.map((o) => ({ ...o })) : undefined,
       beliefs: this.beliefs?.length ? this.beliefs.map((b) => ({ ...b })) : undefined,
+      pendingEvents: this.pendingEvents?.length
+        ? this.pendingEvents.map((e) => ({ ...e }))
+        : undefined,
+      intent: this.intent && { ...this.intent },
+      approachSeen: this.approachSeen?.length
+        ? this.approachSeen.map((s) => ({ ...s }))
+        : undefined,
     };
   }
 }
@@ -358,6 +390,9 @@ export const serializedAgent = {
   needs: v.optional(v.object(serializedNeeds)),
   opinions: v.optional(v.array(serializedOpinion)),
   beliefs: v.optional(v.array(serializedBelief)),
+  pendingEvents: v.optional(v.array(serializedEvent)),
+  intent: v.optional(serializedIntent),
+  approachSeen: v.optional(v.array(serializedApproachSeen)),
 };
 export type SerializedAgent = ObjectType<typeof serializedAgent>;
 
@@ -374,6 +409,9 @@ export async function runAgentOperation(ctx: MutationCtx, operation: string, arg
       break;
     case 'agentDoSomething':
       reference = internal.aiTown.agentOperations.agentDoSomething;
+      break;
+    case 'agentDecide':
+      reference = internal.aiTown.agentOperations.agentDecide;
       break;
     default:
       throw new Error(`Unknown operation: ${operation}`);
