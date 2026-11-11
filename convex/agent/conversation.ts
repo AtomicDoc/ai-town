@@ -5,9 +5,51 @@ import { LLMMessage, chatCompletion } from '../util/llm';
 import { llmTrace } from '../util/llmTrace';
 import { livelihoodPrompts } from '../aiTown/livelihood';
 import { socialPrompts } from '../aiTown/relationships';
+import { policyMode } from '../aiTown/decisionPolicy';
+import { CannedSpeakerState, cannedLine } from '../aiTown/cannedDialogue';
 
 function nameLookup(names: { playerId: string; name: string }[]) {
   return (id: string) => names.find((n) => n.playerId === id)?.name ?? 'someone';
+}
+
+type PromptPerson = { id: string; name: string; coins?: number; activity?: any };
+
+/**
+ * Config A (traditional): a scripted line from templates instead of an LLM
+ * call, with no memory search or embeddings. See aiTown/cannedDialogue.ts.
+ */
+async function cannedReply(
+  ctx: ActionCtx,
+  worldId: Id<'worlds'>,
+  conversationId: GameId<'conversations'>,
+  type: 'start' | 'continue' | 'leave',
+  data: {
+    player: PromptPerson;
+    otherPlayer: PromptPerson;
+    agent: CannedSpeakerState;
+    otherAgent: CannedSpeakerState | null;
+    names: { playerId: string; name: string }[];
+  },
+): Promise<string> {
+  const messages = await ctx.runQuery(internal.agent.memory.loadMessages, {
+    worldId,
+    conversationId,
+  });
+  const line = cannedLine({
+    type,
+    speakerId: data.player.id,
+    speakerName: data.player.name,
+    speaker: data.agent,
+    speakerPlayer: data.player,
+    listenerId: data.otherPlayer.id,
+    listenerName: data.otherPlayer.name,
+    listener: data.otherAgent,
+    nameOf: nameLookup(data.names),
+    now: Date.now(),
+    alreadySaid: messages.filter((m) => m.author === data.player.id).map((m) => m.text),
+  });
+  console.log(`[canned] ${data.player.id} (${type}): ${line}`);
+  return line;
 }
 import * as memory from './memory';
 import { api, internal } from '../_generated/api';
@@ -33,6 +75,15 @@ export async function startConversationMessage(
       conversationId,
     },
   );
+  if (policyMode() === 'traditional') {
+    return await cannedReply(ctx, worldId, conversationId, 'start', {
+      player,
+      otherPlayer,
+      agent,
+      otherAgent: otherAgent ?? null,
+      names,
+    });
+  }
   const embedding = await embeddingsCache.fetch(
     ctx,
     `${player.name} is talking to ${otherPlayer.name}`,
@@ -108,6 +159,15 @@ export async function continueConversationMessage(
       conversationId,
     },
   );
+  if (policyMode() === 'traditional') {
+    return await cannedReply(ctx, worldId, conversationId, 'continue', {
+      player,
+      otherPlayer,
+      agent,
+      otherAgent: otherAgent ?? null,
+      names,
+    });
+  }
   const now = Date.now();
   const started = new Date(conversation.created);
   const embedding = await embeddingsCache.fetch(
@@ -174,6 +234,15 @@ export async function leaveConversationMessage(
       conversationId,
     },
   );
+  if (policyMode() === 'traditional') {
+    return await cannedReply(ctx, worldId, conversationId, 'leave', {
+      player,
+      otherPlayer,
+      agent,
+      otherAgent: otherAgent ?? null,
+      names,
+    });
+  }
   const trace = llmTrace(ctx, 'conversation.leave', playerId);
   const prompt = [
     `You are ${player.name}, and you're currently in a conversation with ${otherPlayer.name}.`,
