@@ -32,6 +32,7 @@ import { ItemKind, addItem, countItem, removeItem } from './inventory';
 import { WHOLESALE_PRICES, sellUpTo } from './economy';
 import { noteTrade } from './relationships';
 import { logRoutine } from './decisions';
+import { BAKERY, SHOP, WHEAT_FIELD } from './places';
 import type { Game } from './game';
 import type { Player } from './player';
 
@@ -81,15 +82,13 @@ export type JobDefinition = {
   delivery?: { item: ItemKind; toJob: JobKind; minBatch: number };
 };
 
-const FIELD: Point = { x: 56, y: 40 }; // open field, lower right of the "gentle" map
-const BAKERY: Point = { x: 30, y: 20 }; // upper middle
-const SHOP: Point = { x: 42, y: 30 }; // center, reachable from field and bakery
+// Workplace names and tiles live in places.ts (shared with free-time places).
 
 export const JOB_DEFINITIONS: Record<JobKind, JobDefinition> = {
   farmer: {
     title: 'farmer',
-    place: 'the wheat field',
-    workplaceTarget: FIELD,
+    place: WHEAT_FIELD.name,
+    workplaceTarget: WHEAT_FIELD.target,
     shiftStartHour: 6,
     shiftEndHour: 16,
     task: { description: 'farming', emoji: '🌾', duration: 30_000 },
@@ -98,8 +97,8 @@ export const JOB_DEFINITIONS: Record<JobKind, JobDefinition> = {
   },
   farmhand: {
     title: 'farmhand',
-    place: 'the wheat field',
-    workplaceTarget: FIELD,
+    place: WHEAT_FIELD.name,
+    workplaceTarget: WHEAT_FIELD.target,
     shiftStartHour: 10,
     shiftEndHour: 18,
     task: { description: 'farming', emoji: '🌾', duration: 40_000 },
@@ -108,8 +107,8 @@ export const JOB_DEFINITIONS: Record<JobKind, JobDefinition> = {
   },
   baker: {
     title: 'baker',
-    place: 'the bakery',
-    workplaceTarget: BAKERY,
+    place: BAKERY.name,
+    workplaceTarget: BAKERY.target,
     // Bakes in the morning with wheat delivered the previous afternoon.
     shiftStartHour: 4,
     shiftEndHour: 12,
@@ -126,8 +125,8 @@ export const JOB_DEFINITIONS: Record<JobKind, JobDefinition> = {
   },
   shopkeeper: {
     title: 'shopkeeper',
-    place: 'the village shop',
-    workplaceTarget: SHOP,
+    place: SHOP.name,
+    workplaceTarget: SHOP.target,
     // Default morning shift; a second shopkeeper overrides it (see characters.ts).
     shiftStartHour: 6,
     shiftEndHour: 14,

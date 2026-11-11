@@ -4,6 +4,7 @@ import { Doc, Id } from '../_generated/dataModel';
 import { internal } from '../_generated/api';
 import { LLMMessage, LlmTrace, chatCompletion, fetchEmbedding } from '../util/llm';
 import { llmTrace } from '../util/llmTrace';
+import { policyMode } from '../aiTown/decisionPolicy';
 import { asyncMap } from '../util/asyncMap';
 import { GameId, agentId, conversationId, playerId } from '../aiTown/ids';
 import { SerializedPlayer } from '../aiTown/player';
@@ -29,6 +30,12 @@ export async function rememberConversation(
   playerId: GameId<'players'>,
   conversationId: GameId<'conversations'>,
 ) {
+  // Config A (traditional) makes no model calls at all: summarizing, rating
+  // importance, and embedding a memory would each need one. Beliefs, opinions,
+  // and recent actions (all scripted) still carry what NPCs know.
+  if (policyMode() === 'traditional') {
+    return;
+  }
   const data = await ctx.runQuery(selfInternal.loadConversation, {
     worldId,
     playerId,

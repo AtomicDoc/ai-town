@@ -33,10 +33,10 @@ import { gameHour } from './clock';
 import { SerializedNeeds, serializedNeeds, tickNeeds } from './needs';
 import { Belief, Opinion, serializedBelief, serializedOpinion } from './relationships';
 import { AgentEvent, serializedEvent } from './decisionPolicy';
+import { RecentAction, serializedRecentAction } from './idle';
 import {
   ApproachSeen,
   Intent,
-  detectPlayerApproach,
   processEvents,
   serializedApproachSeen,
   serializedIntent,
@@ -67,6 +67,7 @@ export class Agent {
   pendingEvents?: AgentEvent[];
   intent?: Intent;
   approachSeen?: ApproachSeen[];
+  recentActions?: RecentAction[];
 
   constructor(serialized: SerializedAgent) {
     const { id, lastConversation, lastInviteAttempt, inProgressOperation } = serialized;
@@ -87,6 +88,7 @@ export class Agent {
     this.pendingEvents = serialized.pendingEvents?.map((e) => ({ ...e }));
     this.intent = serialized.intent && { ...serialized.intent };
     this.approachSeen = serialized.approachSeen?.map((s) => ({ ...s }));
+    this.recentActions = serialized.recentActions?.map((a) => ({ ...a }));
   }
 
   tick(game: Game, now: number) {
@@ -137,7 +139,6 @@ export class Agent {
       }
       // Unusual events (M3): routed through the decision policy, which may
       // ask the LLM. Then any multi-step plan the decision produced.
-      detectPlayerApproach(game, now, this, player);
       if (processEvents(game, now, this, player)) {
         return;
       }
@@ -369,6 +370,9 @@ export class Agent {
       approachSeen: this.approachSeen?.length
         ? this.approachSeen.map((s) => ({ ...s }))
         : undefined,
+      recentActions: this.recentActions?.length
+        ? this.recentActions.map((a) => ({ ...a }))
+        : undefined,
     };
   }
 }
@@ -393,6 +397,7 @@ export const serializedAgent = {
   pendingEvents: v.optional(v.array(serializedEvent)),
   intent: v.optional(serializedIntent),
   approachSeen: v.optional(v.array(serializedApproachSeen)),
+  recentActions: v.optional(v.array(serializedRecentAction)),
 };
 export type SerializedAgent = ObjectType<typeof serializedAgent>;
 

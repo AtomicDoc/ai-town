@@ -3,7 +3,9 @@ import { agentId, conversationId, parseGameId, playerId } from './ids';
 import { addItem, itemKind, removeItem } from './inventory';
 import { gossipFromLine } from './relationships';
 import { decisionChoice, enqueueEvent, serializedEvent } from './decisionPolicy';
-import { finishLlmDecision, logRoutine } from './decisions';
+import { INTENT_TIMEOUT, finishLlmDecision, logRoutine } from './decisions';
+import { nearestPlace, recordAction, serializedIdlePlan } from './idle';
+import { policyMode } from './decisionPolicy';
 import { Player, activity } from './player';
 import { Conversation, conversationInputs } from './conversation';
 import { movePlayer } from './movement';
@@ -55,6 +57,8 @@ export const agentInputs = {
       destination: v.optional(point),
       invitee: v.optional(v.id('players')),
       activity: v.optional(activity),
+      // Config C (llm-heavy): where to go and what to do there, chosen by the LLM.
+      plan: v.optional(serializedIdlePlan),
     },
     handler: (game, now, args) => {
       const agentId = parseGameId('agents', args.agentId);
@@ -91,6 +95,30 @@ export const agentInputs = {
       }
       if (args.activity) {
         player.activity = args.activity;
+        recordAction(agent, now, args.activity.description, nearestPlace(player.position).name);
+      }
+      if (args.plan) {
+        const { plan } = args;
+        agent.intent = {
+          kind: 'activity',
+          destination: plan.destination,
+          place: plan.place,
+          description: plan.description,
+          emoji: plan.emoji,
+          until: now + INTENT_TIMEOUT,
+        };
+        game.logDecision({
+          at: now,
+          playerId: player.id,
+          trigger: 'routine.idle',
+          mode: plan.mode,
+          choice: `${plan.place}: ${plan.description}`,
+          latencyMs: plan.latencyMs,
+          policy: policyMode(),
+        });
+        console.log(
+          `[idle] ${player.id} plans: ${plan.description} at ${plan.place} (${plan.mode})`,
+        );
       }
       // Stock AI Town idle behavior is a routine scripted decision too.
       if (args.invitee) logRoutine(game, now, player, 'invite');

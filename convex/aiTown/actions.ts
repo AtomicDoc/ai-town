@@ -22,6 +22,7 @@ import { inputHandler } from './inputHandler';
 import { ITEM_KINDS, ItemKind, countItem, itemKind, transferItem } from './inventory';
 import { PRICES, WHOLESALE_PRICES, trade } from './economy';
 import { JOB_DEFINITIONS, resolveWorkplace } from './jobs';
+import { enqueueEvent } from './decisionPolicy';
 import {
   OPINION_DELTAS,
   adjustOpinion,
@@ -174,11 +175,13 @@ export function performPlayerAction(
         job.taskEndsAt = now;
         activity.until = now;
         adjustOpinion(targetAgent, actor.id, OPINION_DELTAS.helped);
+        enqueueEvent(targetAgent, { kind: 'helped', at: now, subject: actor.id });
         return `You helped ${targetName} finish ${activity.description}.`;
       }
       // Cut the activity short; the job abandons the task (no output) next tick.
       activity.until = now;
       adjustOpinion(targetAgent, actor.id, OPINION_DELTAS.interfered);
+      enqueueEvent(targetAgent, { kind: 'interfered', at: now, subject: actor.id });
       return `You interfered with ${targetName}'s ${activity.description}.`;
     }
   }
